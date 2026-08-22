@@ -149,6 +149,74 @@ export function plan(inspection, { reserveStroops }) {
  * and nothing more, and is deliberately not in this list, gating it would be
  * charging a user who never owed anything.
  */
+/**
+ * Is this the setup we would have built, or something wearing its coat?
+ *
+ * The setup is signed by the user and handed back to us, and until this
+ * existed the only question asked of it was "does it spend XLM", which is the
+ * question that decides whether the funder has to sign, not whether it should.
+ * Anybody who had paid for one real transfer could then post a different
+ * transaction, and the funder would sign a payment of its whole balance to
+ * whoever asked. One three dollar burn for the entire float.
+ *
+ * So every operation the funder would be signing for is checked against the
+ * one thing it is allowed to be: three XLM, to the address that burn named,
+ * as either a createAccount or a payment. Anything else, and any extra
+ * operation drawn on the funder, is refused before a signature exists.
+ *
+ * The trustline is not our business to police beyond its source: it is the
+ * user's own operation, on their own account, and it costs us nothing.
+ */
+const stroops = (xlm) => Math.round(Number(xlm) * 1e7);
+
+export function assertIsOurSetup(
+  signedXdr,
+  { networkPassphrase, funder, recipient, startingBalance },
+) {
+  const tx = TransactionBuilder.fromXDR(signedXdr, networkPassphrase);
+
+  if (tx.operations.length > 2) {
+    throw new Error(`a setup is one or two operations, this one has ${tx.operations.length}`);
+  }
+
+  let fundingOps = 0;
+  for (const op of tx.operations) {
+    const source = op.source ?? tx.source;
+    if (source !== funder) {
+      // Not drawn on us, so it is the user's own operation and their own cost.
+      // The only one we expect is the trustline, and a stranger operation here
+      // cannot spend anything of ours.
+      continue;
+    }
+
+    const isCreate = op.type === 'createAccount';
+    const isNativePayment = op.type === 'payment' && op.asset?.isNative?.();
+    if (!isCreate && !isNativePayment) {
+      throw new Error(`a setup never asks the funder to perform a ${op.type}`);
+    }
+
+    if (op.destination !== recipient) {
+      throw new Error('the setup would pay an address the burn did not name');
+    }
+
+    // Compared in stroops rather than as text: the SDK writes "3" back as
+    // "3.0000000", and a guard that refuses its own output is a guard nobody
+    // will keep.
+    const amount = isCreate ? op.startingBalance : op.amount;
+    if (stroops(amount) !== stroops(startingBalance)) {
+      throw new Error(`the setup would send ${amount} XLM rather than ${startingBalance}`);
+    }
+
+    fundingOps += 1;
+  }
+
+  if (fundingOps > 1) {
+    throw new Error('a setup funds an account once, this one does it more than once');
+  }
+
+  return tx;
+}
+
 export function spendsOurXlm(signedXdr, networkPassphrase) {
   const tx = TransactionBuilder.fromXDR(signedXdr, networkPassphrase);
   return tx.operations.some(
@@ -193,7 +261,13 @@ export function spendsOurXlm(signedXdr, networkPassphrase) {
 export async function submit(
   horizon,
   signedXdr,
-  { networkPassphrase, paidBurn = null, funderSigner = null, fetchImpl = fetch } = {},
+  {
+    networkPassphrase,
+    paidBurn = null,
+    funderSigner = null,
+    startingBalance = null,
+    fetchImpl = fetch,
+  } = {},
 ) {
   if (!networkPassphrase) {
     throw new Error('submit needs the network passphrase to see what it is submitting');
@@ -207,7 +281,19 @@ export async function submit(
     if (!funderSigner) {
       throw new Error('a transaction that sends XLM needs the funder to sign it here');
     }
-    const tx = TransactionBuilder.fromXDR(signedXdr, networkPassphrase);
+    if (!startingBalance) {
+      throw new Error('submit needs to know what a setup is allowed to send');
+    }
+
+    // Paid for is not the same as ours. The proof says this caller bought an
+    // activation; it says nothing about what they are asking us to sign.
+    const tx = assertIsOurSetup(signedXdr, {
+      networkPassphrase,
+      funder: funderSigner.publicKey(),
+      recipient: paidBurn.stellarRecipient,
+      startingBalance,
+    });
+
     tx.sign(funderSigner);
     toSend = tx.toXDR();
   }

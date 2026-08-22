@@ -10,7 +10,12 @@
 
 import { strkeyKind, underlyingAccount } from './strkey.js';
 import { encodeApprove, encodeBridge, encodeReceiveMessage } from './abi.js';
-import { parseEnvelope, assertOnlyAskingForTrustline, assertBurnsYourOwnUsdc } from './envelope.js';
+import {
+  parseEnvelope,
+  assertOnlyAskingForTrustline,
+  assertBurnsYourOwnUsdc,
+  assertOnlyClaims,
+} from './envelope.js';
 import { CHAINS, routeStatus, fillChainPicker } from './chains.js';
 import * as history from './history.js';
 import {
@@ -94,6 +99,12 @@ const CONFIG = {
     soroban: 'https://soroban-testnet.stellar.org',
     passphrase: 'Test SDF Network ; September 2015',
     usdcIssuer: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
+
+    // Circle's CctpForwarder. Pinned here for the same reason the bridge
+    // contract is: the claim is checked against this before it is signed, and
+    // asking the watcher which contract it meant would let a tampered one name
+    // its own and pass its own exam.
+    forwarder: 'CA66Q2WFBND6V4UEB7RD4SAXSVIWMD6RA4X3U32ELVFGXV5PJK4T4VSZ',
     explorer: 'https://stellar.expert/explorer/testnet',
 
     // The Soroban side, going out. Pinned here for the same reason the API
@@ -1021,21 +1032,27 @@ async function renderClaims() {
  */
 function pollClaimsHard({ everyMs = 2000, forMs = 90000 } = {}) {
   const until = Date.now() + forMs;
-  const timer = window.setInterval(() => {
+  const timer = setInterval(() => {
     if (Date.now() > until) {
-      window.clearInterval(timer);
+      clearInterval(timer);
       return;
     }
     void renderClaims();
   }, everyMs);
+  timer?.unref?.();
 }
 
 function watchForClaims({ everyMs = 8000 } = {}) {
-  window.setInterval(() => {
+  const timer = setInterval(() => {
     if (document.visibilityState !== 'visible') return;
     if (!state.stellar && !state.evm) return;
     void renderClaims();
   }, everyMs);
+
+  // A browser does not care, but a test that imports this module would hang
+  // forever on a timer nobody can reach. Nothing here is worth keeping a
+  // process alive for.
+  timer?.unref?.();
 
   // Coming back to the tab should not cost a poll interval's wait.
   document.addEventListener('visibilitychange', () => {
@@ -1092,6 +1109,15 @@ async function claim(txHash, button) {
       await renderClaims();
       return;
     }
+
+    // Read it before handing it to a wallet. The claim is built on the server,
+    // so this is the check that a tampered watcher cannot have a payment, or a
+    // new signer on the account, signed by somebody who only meant to collect
+    // their money.
+    assertOnlyClaims(parseEnvelope(built.body.xdr), {
+      user: state.stellar,
+      forwarderId: CONFIG.stellar.forwarder,
+    });
 
     const signed = await signWithStellar(state.stellarWallet, built.body.xdr, {
       networkPassphrase: CONFIG.stellar.passphrase,

@@ -35,6 +35,10 @@ export function createHandler({
   // Builds the forwarder call the recipient signs. Optional so a watcher that
   // only follows one direction still starts.
   buildClaim = null,
+  // Asks the chain whether a message has been spent. Optional: without one the
+  // /claimed endpoint refuses rather than believing what it is told, because
+  // an unchecked report is exactly the thing that endpoint got wrong.
+  messageConsumed = null,
   // From {createPulse}, written by the follower loop. Optional: without one
   // the endpoint answers as it always did, which keeps every existing caller
   // and test working.
@@ -182,6 +186,20 @@ export function createHandler({
       if (!transfer) return json(404, { error: 'no record of that burn' });
       if (transfer.deliveredAt) {
         return json(200, { status: 'already recorded', at: transfer.deliveredAt.at });
+      }
+      if (!transfer.claimable) {
+        return json(409, { error: 'that transfer is not claimable yet' });
+      }
+
+      // Not taken on trust. Anyone can reach this endpoint, and a report that
+      // closed a record on nothing but its own say-so would let a stranger
+      // clear somebody else's claim off their screen.
+      if (!messageConsumed) {
+        return json(503, { error: 'this watcher cannot verify claims right now' });
+      }
+      const spent = await messageConsumed(transfer);
+      if (!spent) {
+        return json(409, { error: 'the chain still has that message waiting to be claimed' });
       }
 
       store.markDelivered(txHash, stellarTxHash);

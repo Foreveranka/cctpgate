@@ -168,3 +168,74 @@ test('a preflight is answered rather than looked up as a route', async () => {
   assert.equal(res.headers['access-control-allow-origin'], '*');
   assert.match(res.headers['access-control-allow-headers'], /content-type/);
 });
+
+/**
+ * The claim report, which used to be taken on trust.
+ *
+ * Anybody can reach this service, so a report that closed a record on its own
+ * say-so let a stranger clear somebody else's claim off their screen. The
+ * money was never reachable, CCTP is spent by the chain and not by our
+ * bookkeeping, but a bridge whose screen lies about where your money is has
+ * failed at the only job the screen has.
+ */
+test('a claim report is refused while the chain still has the message', async () => {
+  const store = new Store();
+  store.remember({ txHash: TX, recipient: RECIPIENT });
+  store.markClaimable(TX, { message: 'de', attestation: 'ad' });
+
+  const handle = createHandler({
+    store,
+    verifyBurn: async () => ({ txHash: TX, stellarRecipient: RECIPIENT, activate: false }),
+    // The chain says it is still waiting, whatever the caller claims.
+    messageConsumed: async () => false,
+  });
+
+  const answer = await handle({
+    method: 'POST',
+    path: '/claimed',
+    body: { txHash: TX, stellarTxHash: 'made-up' },
+  });
+
+  assert.equal(answer.status, 409);
+  assert.equal(store.get(TX).deliveredAt, null, 'the record stays open');
+  assert.equal(store.claimable().length, 1, 'and the owner still sees their claim');
+});
+
+test('a claim report is recorded once the chain agrees it was spent', async () => {
+  const store = new Store();
+  store.remember({ txHash: TX, recipient: RECIPIENT });
+  store.markClaimable(TX, { message: 'de', attestation: 'ad' });
+
+  const handle = createHandler({
+    store,
+    verifyBurn: async () => ({ txHash: TX, stellarRecipient: RECIPIENT, activate: false }),
+    messageConsumed: async () => true,
+  });
+
+  const answer = await handle({
+    method: 'POST',
+    path: '/claimed',
+    body: { txHash: TX, stellarTxHash: 'abc123' },
+  });
+
+  assert.equal(answer.status, 200);
+  assert.equal(store.get(TX).deliveredAt.stellarTxHash, 'abc123');
+});
+
+/// A watcher that cannot check must not guess. Refusing leaves the claim on
+/// the screen, which is the harmless way to be wrong.
+test('a watcher that cannot verify refuses rather than believing the report', async () => {
+  const store = new Store();
+  store.remember({ txHash: TX, recipient: RECIPIENT });
+  store.markClaimable(TX, { message: 'de', attestation: 'ad' });
+
+  const handle = createHandler({
+    store,
+    verifyBurn: async () => ({ txHash: TX, stellarRecipient: RECIPIENT, activate: false }),
+  });
+
+  const answer = await handle({ method: 'POST', path: '/claimed', body: { txHash: TX } });
+
+  assert.equal(answer.status, 503);
+  assert.equal(store.get(TX).deliveredAt, null);
+});

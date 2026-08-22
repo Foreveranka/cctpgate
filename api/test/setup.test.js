@@ -131,7 +131,8 @@ test('the funder signs at submission, and only with a proof', async () => {
   await assert.rejects(
     submit('https://horizon.example', heldXdr, {
       networkPassphrase: passphrase,
-      paidBurn: { txHash: '0xaf40', activate: true },
+      paidBurn: { txHash: '0xaf40', activate: true, stellarRecipient: userKey.publicKey() },
+      startingBalance: '3',
       fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ hash: 'x' }) }),
     }),
     /funder/,
@@ -141,8 +142,9 @@ test('the funder signs at submission, and only with a proof', async () => {
   let posted = null;
   const result = await submit('https://horizon.example', heldXdr, {
     networkPassphrase: passphrase,
-    paidBurn: { txHash: '0xaf40', activate: true },
+    paidBurn: { txHash: '0xaf40', activate: true, stellarRecipient: userKey.publicKey() },
     funderSigner: funderKey,
+    startingBalance: '3',
     fetchImpl: async (_url, init) => {
       posted = new URLSearchParams(init.body).get('tx');
       return { ok: true, status: 200, json: async () => ({ hash: 'abc' }) };

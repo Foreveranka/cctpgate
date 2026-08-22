@@ -459,3 +459,67 @@ export function assertOnlyAskingForTrustline(envelope, { user, assetCode, issuer
 
   return envelope;
 }
+
+/**
+ * The claim, checked before a wallet is asked to sign it.
+ *
+ * The setup had this check from the start and the claim did not, which was an
+ * oversight with real teeth: the claim envelope is built by the watcher and
+ * signed by the user, so a watcher that has been tampered with, or a tunnel
+ * that has been taken over, could hand back a payment of the user's USDC to
+ * somebody else, or an operation adding a signer to their account, and the
+ * page would have passed it straight to Freighter. Freighter would show it,
+ * and people click through what they are shown.
+ *
+ * So the same rule as the burn: one operation, drawn on your own account,
+ * calling the forwarder we pinned, by the name we expect, for a fee a claim
+ * can plausibly cost. Anything else is refused here, before a signature is
+ * asked for.
+ */
+export function assertOnlyClaims(envelope, { user, forwarderId }) {
+  const userBytes = accountBytes(user);
+  const expectedContract = contractBytes(forwarderId);
+
+  if (!sameBytes(envelope.source, userBytes)) {
+    throw new SuspiciousSetup(
+      'this claim is drawn on an account that is not yours. Nothing has been signed.',
+    );
+  }
+  if (envelope.fee > MAX_FEE_STROOPS) {
+    throw new SuspiciousSetup(
+      `this claim would charge ${(envelope.fee / 1e7).toFixed(2)} XLM in fees, ` +
+        'far more than a claim costs. Nothing has been signed.',
+    );
+  }
+  if (envelope.operations.length !== 1) {
+    throw new SuspiciousSetup(
+      `this claim contains ${envelope.operations.length} operations. ` +
+        'A claim is exactly one. Nothing has been signed.',
+    );
+  }
+
+  const [op] = envelope.operations;
+  if (op.type !== 'invokeContract') {
+    throw new SuspiciousSetup(
+      `this claim asks your account to perform a ${op.type} rather than a contract call. ` +
+        'Nothing has been signed.',
+    );
+  }
+  if (op.contract.kind !== 'contract' || !sameBytes(op.contract.bytes, expectedContract)) {
+    throw new SuspiciousSetup(
+      "this claim calls a contract that is not Circle's forwarder. Nothing has been signed.",
+    );
+  }
+  if (op.fn !== 'mint_and_forward') {
+    throw new SuspiciousSetup(
+      `this claim calls ${op.fn} rather than mint_and_forward. Nothing has been signed.`,
+    );
+  }
+  if (op.args.length !== 2) {
+    throw new SuspiciousSetup(
+      `this claim carries ${op.args.length} arguments rather than two. Nothing has been signed.`,
+    );
+  }
+
+  return envelope;
+}

@@ -1,10 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { Account, Keypair, Networks, TransactionBuilder } from '@stellar/stellar-sdk';
+import { Account, Asset, Keypair, Networks, Operation, TransactionBuilder } from '@stellar/stellar-sdk';
 
-import { buildActivation, buildTopUp, buildTrustline, plan, submit } from '../src/stellar/activation.js';
+import {
+  assertIsOurSetup,
+  buildActivation,
+  buildTopUp,
+  buildTrustline,
+  plan,
+  submit,
+} from '../src/stellar/activation.js';
 import { USDC } from '../src/config.js';
+
+/// Fixed keys, so a failure names the same account twice running.
+const FUNDER = Keypair.fromRawEd25519Seed(Buffer.alloc(32, 1));
+const USER = Keypair.fromRawEd25519Seed(Buffer.alloc(32, 2));
+const CHANNEL = Keypair.fromRawEd25519Seed(Buffer.alloc(32, 3));
+const ISSUER = Keypair.fromRawEd25519Seed(Buffer.alloc(32, 4));
 
 const asset = USDC.testnet;
 const passphrase = Networks.TESTNET;
@@ -253,8 +266,9 @@ test('a burn that bought no activation is not a proof', async () => {
 test('a paid activation goes through, once the funder adds its signature', async () => {
   const result = await submit('https://horizon.example', activationXdr(), {
     networkPassphrase: passphrase,
-    paidBurn: { txHash: '0xaf40', activate: true },
+    paidBurn: { txHash: '0xaf40', activate: true, stellarRecipient: userKey.publicKey() },
     funderSigner: funderKey,
+    startingBalance: '3',
     fetchImpl: response({ hash: 'abc123' }, 200),
   });
   assert.equal(result.ok, true);
@@ -269,7 +283,8 @@ test('a proof without the funder is still not a payment', async () => {
   await assert.rejects(
     submit('https://horizon.example', activationXdr(), {
       networkPassphrase: passphrase,
-      paidBurn: { txHash: '0xaf40', activate: true },
+      paidBurn: { txHash: '0xaf40', activate: true, stellarRecipient: userKey.publicKey() },
+      startingBalance: '3',
       fetchImpl: async () => {
         throw new Error('Horizon must not be reached');
       },
@@ -293,5 +308,132 @@ test('refuses to submit blind', async () => {
   await assert.rejects(
     submit('https://horizon.example', trustlineXdr(), { fetchImpl: response({}, 200) }),
     /passphrase/,
+  );
+});
+
+/**
+ * The setup is signed by the user and handed back, so what comes back is not
+ * necessarily what went out. Until this was checked, the only question asked
+ * of it was whether it spends XLM, which decides whether the funder has to
+ * sign, not whether it should. One paid transfer bought the right to have
+ * anything signed.
+ */
+test('a setup that pays somebody else is refused before the funder signs', () => {
+  const attacker = Keypair.random();
+  const evil = new TransactionBuilder(new Account(attacker.publicKey(), '1'), {
+    fee: '1000',
+    networkPassphrase: Networks.TESTNET,
+  })
+    .addOperation(
+      Operation.payment({
+        source: FUNDER.publicKey(),
+        destination: attacker.publicKey(),
+        asset: Asset.native(),
+        amount: '9000',
+      }),
+    )
+    .setTimeout(300)
+    .build();
+
+  assert.throws(
+    () =>
+      assertIsOurSetup(evil.toXDR(), {
+        networkPassphrase: Networks.TESTNET,
+        funder: FUNDER.publicKey(),
+        recipient: USER.publicKey(),
+        startingBalance: '3',
+      }),
+    /did not name/,
+  );
+});
+
+test('a setup that sends more than it should is refused', () => {
+  const greedy = new TransactionBuilder(new Account(USER.publicKey(), '1'), {
+    fee: '1000',
+    networkPassphrase: Networks.TESTNET,
+  })
+    .addOperation(
+      Operation.createAccount({
+        source: FUNDER.publicKey(),
+        destination: USER.publicKey(),
+        startingBalance: '9000',
+      }),
+    )
+    .setTimeout(300)
+    .build();
+
+  assert.throws(
+    () =>
+      assertIsOurSetup(greedy.toXDR(), {
+        networkPassphrase: Networks.TESTNET,
+        funder: FUNDER.publicKey(),
+        recipient: USER.publicKey(),
+        startingBalance: '3',
+      }),
+    /rather than 3/,
+  );
+});
+
+test('a setup asking the funder for anything else is refused', () => {
+  const takeover = new TransactionBuilder(new Account(USER.publicKey(), '1'), {
+    fee: '1000',
+    networkPassphrase: Networks.TESTNET,
+  })
+    .addOperation(
+      Operation.setOptions({
+        source: FUNDER.publicKey(),
+        signer: { ed25519PublicKey: Keypair.random().publicKey(), weight: 1 },
+      }),
+    )
+    .addOperation(
+      Operation.createAccount({
+        source: FUNDER.publicKey(),
+        destination: USER.publicKey(),
+        startingBalance: '3',
+      }),
+    )
+    .setTimeout(300)
+    .build();
+
+  assert.throws(
+    () =>
+      assertIsOurSetup(takeover.toXDR(), {
+        networkPassphrase: Networks.TESTNET,
+        funder: FUNDER.publicKey(),
+        recipient: USER.publicKey(),
+        startingBalance: '3',
+      }),
+    /never asks the funder/,
+  );
+});
+
+test('the setup we actually build passes', () => {
+  const ours = new TransactionBuilder(new Account(CHANNEL.publicKey(), '1'), {
+    fee: '10000',
+    networkPassphrase: Networks.TESTNET,
+  })
+    .addOperation(
+      Operation.createAccount({
+        source: FUNDER.publicKey(),
+        destination: USER.publicKey(),
+        startingBalance: '3',
+      }),
+    )
+    .addOperation(
+      Operation.changeTrust({
+        source: USER.publicKey(),
+        asset: new Asset('USDC', ISSUER.publicKey()),
+      }),
+    )
+    .setTimeout(300)
+    .build();
+
+  assert.doesNotThrow(() =>
+    assertIsOurSetup(ours.toXDR(), {
+      networkPassphrase: Networks.TESTNET,
+      funder: FUNDER.publicKey(),
+      recipient: USER.publicKey(),
+      startingBalance: '3',
+    }),
   );
 });

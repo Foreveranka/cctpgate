@@ -19,6 +19,8 @@ import { deliver, FORWARDER } from './watcher/deliver.js';
 import { submit } from './stellar/activation.js';
 import { buildSetupFor } from './stellar/setup.js';
 import { buildClaim as buildClaimTx } from './stellar/claim.js';
+import { stellarMessageConsumed, evmMessageConsumed } from './watcher/consumed.js';
+import { encodeReceiveMessage } from '../../web/abi.js';
 import { buildOutbound as buildOutboundTx } from './stellar/outbound.js';
 import { claimOnEvm, MESSAGE_TRANSMITTER, STELLAR_DOMAIN } from './watcher/reverse.js';
 import { run } from './watcher/run.js';
@@ -70,6 +72,9 @@ export function assemble(env = process.env) {
       networkPassphrase: passphrase,
       paidBurn,
       funderSigner: funder,
+      // What a setup is allowed to send, so the check has something to compare
+      // against rather than a rule written down twice.
+      startingBalance: CFG.activationXlm,
     });
 
   const buildSetup =
@@ -100,6 +105,27 @@ export function assemble(env = process.env) {
       attestation,
       baseFee: CFG.baseFee,
     });
+
+  // Whether the chain has already minted a message, asked of the chain rather
+  // than of whoever is reporting it. Both directions answer the same question
+  // through their own contract.
+  const messageConsumed = (transfer) =>
+    transfer.direction === 'out'
+      ? evmMessageConsumed({
+          rpcUrl: rpc,
+          transmitter: isTestnet ? MESSAGE_TRANSMITTER.testnet : MESSAGE_TRANSMITTER.public,
+          calldata: encodeReceiveMessage(
+            transfer.claimable.message,
+            transfer.claimable.attestation,
+          ),
+          from: '0x0000000000000000000000000000000000000000',
+        })
+      : stellarMessageConsumed({
+          buildClaim,
+          source: transfer.recipient,
+          message: transfer.claimable.message,
+          attestation: transfer.claimable.attestation,
+        });
 
   const deliverMessage = (message, attestation) =>
     deliver({
@@ -167,6 +193,7 @@ export function assemble(env = process.env) {
     deliver: deliverMessage,
     buildSetup,
     buildClaim,
+    messageConsumed,
     port: Number(env.PORT ?? 8787),
     cursor: env.BRIDGE_CURSOR ? Number(env.BRIDGE_CURSOR) : undefined,
   };
@@ -187,6 +214,7 @@ export async function main(env = process.env) {
       buildSetup: parts.buildSetup,
       buildOutbound: parts.buildOutbound,
       buildClaim: parts.buildClaim,
+      messageConsumed: parts.messageConsumed,
       pulse,
     }), {
     port: parts.port,
