@@ -1,0 +1,201 @@
+/**
+ * Wiring. The only file here that knows about the environment.
+ *
+ * Everything it assembles is testable without it, which is the point: this
+ * reads configuration, binds it to the pieces, and gets out of the way. If a
+ * decision ends up in here it has escaped from somewhere it could be checked.
+ */
+
+import { createServer } from 'node:http';
+import { Keypair, Networks } from '@stellar/stellar-sdk';
+
+import { CFG, network } from './config.js';
+import { createHandler, listen } from './server.js';
+import { Store } from './watcher/store.js';
+import { Cursors } from './watcher/cursors.js';
+import { verifyPaidBurn } from './watcher/burn.js';
+import { IRIS, fetchAttestation } from './watcher/attestation.js';
+import { deliver, FORWARDER } from './watcher/deliver.js';
+import { submit } from './stellar/activation.js';
+import { buildSetupFor } from './stellar/setup.js';
+import { buildOutbound as buildOutboundTx } from './stellar/outbound.js';
+import { claimOnEvm, MESSAGE_TRANSMITTER, STELLAR_DOMAIN } from './watcher/reverse.js';
+import { run } from './watcher/run.js';
+import { createPulse } from './watcher/pulse.js';
+
+function required(env, name) {
+  const value = env[name];
+  if (!value) throw new Error(`${name} is required`);
+  return value;
+}
+
+export function assemble(env = process.env) {
+  const chosen = network();
+  const isTestnet = CFG.network === 'testnet';
+
+  const rpc = env.BRIDGE_SOURCE_RPC || 'https://api.avax-test.network/ext/bc/C/rpc';
+  const bridge = required(env, 'BRIDGE_CONTRACT');
+  const sourceDomain = Number(env.BRIDGE_SOURCE_DOMAIN ?? 1);
+
+  const signer = Keypair.fromSecret(required(env, 'BRIDGE_DELIVERY_SECRET'));
+  const passphrase = isTestnet ? Networks.TESTNET : Networks.PUBLIC;
+
+  const store = new Store({ path: env.BRIDGE_STORE || './transfers.json' });
+  // Beside the store, and outside the code directory for the same reason it
+  // is: deployment rsyncs `api/` with --delete, so a position kept in there
+  // would be thrown away by the very restarts it exists to survive.
+  const cursors = new Cursors({ path: env.BRIDGE_CURSORS || './cursors.json' });
+
+  // Each dependency is the general function with this deployment's facts
+  // already bound, so nothing downstream has to know where it is running.
+  const verifyBurn = (txHash, recipient) =>
+    verifyPaidBurn(rpc, txHash, { bridge, expectedRecipient: recipient });
+
+  const attest = (txHash) =>
+    fetchAttestation(isTestnet ? IRIS.testnet : IRIS.public, sourceDomain, txHash);
+
+  // The funder signs here and nowhere earlier: the setup that goes out to the
+  // browser is short exactly this signature, so it cannot be submitted for
+  // three XLM by anyone who never burned.
+  const funder = env.BRIDGE_FUNDER_SECRET
+    ? Keypair.fromSecret(env.BRIDGE_FUNDER_SECRET)
+    : null;
+  const channel = env.BRIDGE_CHANNEL_SECRET
+    ? Keypair.fromSecret(env.BRIDGE_CHANNEL_SECRET)
+    : null;
+
+  const submitSetup = (signedXdr, paidBurn) =>
+    submit(chosen.horizon, signedXdr, {
+      networkPassphrase: passphrase,
+      paidBurn,
+      funderSigner: funder,
+    });
+
+  const buildSetup =
+    channel && funder
+      ? (recipient, { amount } = {}) =>
+          buildSetupFor(recipient, {
+            horizon: chosen.horizon,
+            asset: chosen.usdc,
+            networkPassphrase: passphrase,
+            channelSigner: channel,
+            funderAddress: funder.publicKey(),
+            startingXlm: CFG.activationXlm,
+            timeoutSeconds: CFG.setupTimeoutSeconds,
+            baseFee: CFG.baseFee,
+            amount,
+          })
+      : null;
+
+  const deliverMessage = (message, attestation) =>
+    deliver({
+      rpcUrl: env.BRIDGE_SOROBAN_RPC || 'https://soroban-testnet.stellar.org',
+      networkPassphrase: passphrase,
+      forwarderId: isTestnet ? FORWARDER.testnet : FORWARDER.public,
+      signer,
+      message,
+      attestation,
+    });
+
+  // The other direction runs only where it is configured. A deployment with
+  // no Soroban contract and no EVM key simply does not follow it, rather than
+  // following it badly.
+  const reverseContract = env.BRIDGE_REVERSE_CONTRACT || null;
+  const evmKey = env.BRIDGE_CLAIM_PRIVATE_KEY || null;
+
+  const reverse =
+    reverseContract && evmKey
+      ? {
+          rpcUrl: env.BRIDGE_SOROBAN_RPC || 'https://soroban-testnet.stellar.org',
+          contractId: reverseContract,
+          startLedger: env.BRIDGE_REVERSE_LEDGER ? Number(env.BRIDGE_REVERSE_LEDGER) : null,
+        }
+      : null;
+
+  // Circle attests the outbound burns under Stellar's domain, not ours.
+  const attestOut = (txHash) =>
+    fetchAttestation(isTestnet ? IRIS.testnet : IRIS.public, STELLAR_DOMAIN, txHash);
+
+  const claim = (message, attestation) =>
+    claimOnEvm({
+      rpcUrl: rpc,
+      privateKey: evmKey,
+      transmitter: isTestnet ? MESSAGE_TRANSMITTER.testnet : MESSAGE_TRANSMITTER.public,
+      message,
+      attestation,
+      testnet: isTestnet,
+    });
+
+  const buildOutbound = reverseContract
+    ? ({ from, amount, recipient }) =>
+        buildOutboundTx(
+          { from, amount, recipient },
+          {
+            rpcUrl: env.BRIDGE_SOROBAN_RPC || 'https://soroban-testnet.stellar.org',
+            contractId: reverseContract,
+            networkPassphrase: passphrase,
+          },
+        )
+    : null;
+
+  return {
+    store,
+    cursors,
+    rpc,
+    bridge,
+    buildOutbound,
+    reverse,
+    attestOut,
+    claim,
+    verifyBurn,
+    attest,
+    submitSetup,
+    deliver: deliverMessage,
+    buildSetup,
+    port: Number(env.PORT ?? 8787),
+    cursor: env.BRIDGE_CURSOR ? Number(env.BRIDGE_CURSOR) : undefined,
+  };
+}
+
+export async function main(env = process.env) {
+  const parts = assemble(env);
+  const controller = new AbortController();
+
+  // Shared between the follower and the health endpoint: one writes, the other
+  // reads. It exists here rather than inside either of them because it is the
+  // only thing they both need to see.
+  const pulse = createPulse();
+
+  const server = listen(createHandler({
+      store: parts.store,
+      verifyBurn: parts.verifyBurn,
+      buildSetup: parts.buildSetup,
+      buildOutbound: parts.buildOutbound,
+      pulse,
+    }), {
+    port: parts.port,
+    createServer,
+  });
+
+  const stop = () => {
+    controller.abort();
+    server.close();
+  };
+  process.on('SIGINT', stop);
+  process.on('SIGTERM', stop);
+
+  // One line per event, as JSON, so whatever collects logs can filter rather
+  // than parse prose.
+  const log = (line) => console.log(JSON.stringify({ at: new Date().toISOString(), ...line }));
+  log({ event: 'listening', port: parts.port, bridge: parts.bridge });
+
+  await run({ ...parts, signal: controller.signal, log, pulse });
+}
+
+// Only when run directly, so importing this for tests starts nothing.
+if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split('/').pop())) {
+  main().catch((error) => {
+    console.error(JSON.stringify({ event: 'fatal', reason: String(error?.message ?? error) }));
+    process.exit(1);
+  });
+}
