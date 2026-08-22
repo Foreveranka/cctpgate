@@ -988,15 +988,14 @@ async function renderClaims() {
     amt.textContent = item.forMe ? 'USDC waiting for you' : `USDC waiting for ${short}`;
     const to = document.createElement('div');
     to.className = 'to';
-    to.textContent = item.forMe
-      ? `burn ${item.txHash.slice(0, 10)}…`
-      : 'mints to that address · you pay only the fee';
+    to.textContent = `burn ${item.txHash.slice(0, 10)}…`;
     left.append(amt, to);
 
     const take = document.createElement('button');
     take.className = 'take';
     take.type = 'button';
-    take.textContent = item.forMe ? 'Claim' : `Claim to ${short}`;
+    // The row already says where it goes; the button only has to be a verb.
+    take.textContent = 'Claim';
     take.addEventListener('click', () => claim(item.txHash, take));
 
     row.append(left, take);
