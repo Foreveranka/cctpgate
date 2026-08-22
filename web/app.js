@@ -921,6 +921,11 @@ function explorerFor(entry) {
 // this page, and an unclaimed message is not consumed, so nothing expires.
 // --------------------------------------------------------------------------
 
+/// What the list looked like last time, so an unchanged answer redraws nothing.
+/// Without this the poll would rebuild the row under the cursor every few
+/// seconds and a click could land on a button that had just been replaced.
+let claimSignature = null;
+
 /// Everything waiting on the connected Stellar address.
 async function renderClaims() {
   if (!el.claimCard) return;
@@ -953,9 +958,18 @@ async function renderClaims() {
   } catch {
     // The watcher being unreachable is not the user's problem to read about
     // here; the transfer is safe either way and the panel simply stays quiet.
+    // The signature is cleared so the list is rebuilt once it answers again.
+    claimSignature = null;
     el.claimCard.hidden = true;
     return;
   }
+
+  const signature = waiting
+    .map((t) => `${t.txHash}:${t.forMe ? 'me' : 'them'}`)
+    .sort()
+    .join('|');
+  if (signature === claimSignature) return;
+  claimSignature = signature;
 
   el.claimCard.hidden = waiting.length === 0;
   el.claimList.innerHTML = '';
@@ -967,23 +981,67 @@ async function renderClaims() {
     const left = document.createElement('div');
     const amt = document.createElement('div');
     amt.className = 'amt';
-    amt.textContent = item.forMe ? 'USDC waiting for you' : 'USDC waiting for the address you paid';
+    // Never a claim about whose address it is: the page cannot know that, and a
+    // second wallet of your own would be called somebody else's. It says where
+    // the money goes, which is the fact it actually holds.
+    const short = `${item.recipient.slice(0, 6)}…${item.recipient.slice(-4)}`;
+    amt.textContent = item.forMe ? 'USDC waiting for you' : `USDC waiting for ${short}`;
     const to = document.createElement('div');
     to.className = 'to';
     to.textContent = item.forMe
       ? `burn ${item.txHash.slice(0, 10)}…`
-      : `${item.recipient.slice(0, 8)}… · you pay only the fee`;
+      : 'mints to that address · you pay only the fee';
     left.append(amt, to);
 
     const take = document.createElement('button');
     take.className = 'take';
     take.type = 'button';
-    take.textContent = item.forMe ? 'Claim' : 'Claim for them';
+    take.textContent = item.forMe ? 'Claim' : `Claim to ${short}`;
     take.addEventListener('click', () => claim(item.txHash, take));
 
     row.append(left, take);
     el.claimList.append(row);
   }
+}
+
+/**
+ * Keeps the list current without a reload.
+ *
+ * A burn attests in seconds, and the claim it turns into is the whole point of
+ * the page: making somebody press F5 to find their own money is not a design,
+ * it is a bug. So this polls while a wallet is connected, and only while the
+ * tab is actually being looked at, because a background tab asking every eight
+ * seconds forever is somebody else's battery.
+ */
+/**
+ * A short burst of fast polling, for the minute after a burn.
+ *
+ * Attestation takes seconds from Avalanche, and the eight-second loop is for
+ * idling, not for the moment somebody is watching the screen waiting to see
+ * their transfer appear.
+ */
+function pollClaimsHard({ everyMs = 2000, forMs = 90000 } = {}) {
+  const until = Date.now() + forMs;
+  const timer = window.setInterval(() => {
+    if (Date.now() > until) {
+      window.clearInterval(timer);
+      return;
+    }
+    void renderClaims();
+  }, everyMs);
+}
+
+function watchForClaims({ everyMs = 8000 } = {}) {
+  window.setInterval(() => {
+    if (document.visibilityState !== 'visible') return;
+    if (!state.stellar && !state.evm) return;
+    void renderClaims();
+  }, everyMs);
+
+  // Coming back to the tab should not cost a poll interval's wait.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') void renderClaims();
+  });
 }
 
 /// Builds the forwarder call, has the user sign it, submits it, and tells the
@@ -1188,6 +1246,7 @@ el.swap.addEventListener('click', () => {
 
 renderHistory();
 void renderClaims();
+watchForClaims();
 renderSides();
 
 el.net.textContent = CONFIG.network;
@@ -1330,7 +1389,8 @@ async function bridgeOut() {
     renderHistory();
     void renderClaims();
 
-    setStatus('done', `Burned. The bridge will claim it on ${CHAINS[state.to].name}.`);
+    setStatus('done', `Burned. Your claim on ${CHAINS[state.to].name} will appear here in a few seconds.`);
+    pollClaimsHard();
     // The claim is recorded in the same store the way in uses, under this same
     // hash, so waiting for it is the same wait.
     watchDelivery(result.hash);
@@ -1438,7 +1498,8 @@ async function bridge() {
     renderHistory();
     void renderClaims();
 
-    setStatus('done', 'Burned. Watching for delivery…');
+    setStatus('done', 'Burned. Your claim will appear here in a few seconds.');
+    pollClaimsHard();
     watchDelivery(txHash);
   } catch (error) {
     setStatus('idle');
