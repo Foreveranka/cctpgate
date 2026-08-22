@@ -1043,6 +1043,28 @@ function watchForClaims({ everyMs = 8000 } = {}) {
   });
 }
 
+/**
+ * Waits for a Soroban transaction to be in the ledger, and says which way it
+ * went. `NOT_FOUND` is not failure, it is the RPC not having caught up, so it
+ * is worth waiting through rather than reporting.
+ */
+async function awaitStellarTx(hash, { tries = 20, everyMs = 1500 } = {}) {
+  for (let i = 0; i < tries; i += 1) {
+    const answer = await fetch(`${CONFIG.stellar.soroban}/`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getTransaction', params: { hash } }),
+    })
+      .then((r) => r.json())
+      .catch(() => ({}));
+
+    const status = answer?.result?.status;
+    if (status === 'SUCCESS' || status === 'FAILED') return status;
+    await new Promise((done) => setTimeout(done, everyMs));
+  }
+  return 'PENDING';
+}
+
 /// Builds the forwarder call, has the user sign it, submits it, and tells the
 /// watcher it landed. A failure here costs a fee and nothing else: the message
 /// is not consumed by a refused claim, so the button comes back.
@@ -1088,8 +1110,22 @@ async function claim(txHash, button) {
     });
     const result = (await sent.json()).result ?? {};
     if (result.status === 'ERROR') throw new Error('the claim was rejected');
+    if (!result.hash) throw new Error('the network did not say what it did with the claim');
 
-    await api('/claimed', { txHash, stellarTxHash: result.hash ?? null });
+    // Submitted is not landed. Saying "claimed" on a PENDING answer would be a
+    // success message for something that can still fail, and the record would
+    // close on a transfer nobody had actually collected.
+    setStatus('working', 'Claim submitted. Waiting for the ledger…');
+    const settled = await awaitStellarTx(result.hash);
+    if (settled !== 'SUCCESS') {
+      throw new Error(
+        settled === 'FAILED'
+          ? 'The claim did not go through. Nothing was consumed, so it can be tried again.'
+          : 'The ledger has not answered yet. The claim may still land; check again shortly.',
+      );
+    }
+
+    await api('/claimed', { txHash, stellarTxHash: result.hash });
     setStatus('done', 'Claimed. The USDC is in your account.');
     await renderClaims();
   } catch (error) {
