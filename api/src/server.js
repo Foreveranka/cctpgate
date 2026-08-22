@@ -27,6 +27,19 @@ const json = (status, body) => ({ status, body });
  * @param verifyBurn `(txHash, recipient) => proof | null`, from
  *        {verifyPaidBurn} with the RPC and bridge address bound.
  */
+/**
+ * Is this the shape of a transaction hash?
+ *
+ * Checked here rather than left to whoever we hand it to. A five megabyte
+ * "hash" reached an RPC provider and came back with their error, which means
+ * for a moment this service was a way to spend somebody else's quota. The
+ * shapes are the two it can be: an EVM hash with its prefix, or a Stellar one
+ * without.
+ */
+export function looksLikeTxHash(value) {
+  return typeof value === 'string' && /^(0x)?[0-9a-fA-F]{64}$/.test(value);
+}
+
 export function createHandler({
   store,
   verifyBurn,
@@ -92,6 +105,9 @@ export function createHandler({
       if (!txHash || !recipient) {
         return json(400, { error: 'txHash and recipient are required' });
       }
+      if (!looksLikeTxHash(txHash)) {
+        return json(400, { error: 'that is not the shape of a transaction hash' });
+      }
 
       let proof;
       try {
@@ -136,6 +152,9 @@ export function createHandler({
 
       const { txHash, source = null } = body ?? {};
       if (!txHash) return json(400, { error: 'txHash is required' });
+      if (!looksLikeTxHash(txHash)) {
+        return json(400, { error: 'that is not the shape of a transaction hash' });
+      }
 
       const transfer = store.get(txHash);
       if (!transfer) return json(404, { error: 'no record of that burn' });
@@ -181,6 +200,9 @@ export function createHandler({
     if (method === 'POST' && path === '/claimed') {
       const { txHash, stellarTxHash = null } = body ?? {};
       if (!txHash) return json(400, { error: 'txHash is required' });
+      if (!looksLikeTxHash(txHash)) {
+        return json(400, { error: 'that is not the shape of a transaction hash' });
+      }
 
       const transfer = store.get(txHash);
       if (!transfer) return json(404, { error: 'no record of that burn' });
@@ -268,13 +290,96 @@ export function createHandler({
  * A node:http adapter, kept thin on purpose. The routing above is testable
  * without binding a port; this is the part that cannot be.
  */
-export function listen(handle, { port = 8787, createServer, allowOrigin = '*' } = {}) {
+/**
+ * How much body a request may carry.
+ *
+ * Everything this service is sent is small: a transaction hash, an address, a
+ * signed envelope. The largest legitimate one is a prepared Soroban claim, a
+ * few kilobytes of base64. Without a ceiling, a stranger can post megabytes
+ * and have us hold them in memory and hand them on to somebody else's RPC,
+ * which is a bill and an outage rather than a theft, but neither is ours to
+ * hand out.
+ */
+export const MAX_BODY_BYTES = 64 * 1024;
+
+/**
+ * What a caller may do in a minute, per route and per address.
+ *
+ * The numbers are set from what the interface actually does rather than from a
+ * feeling: it polls the claim list every eight seconds while a tab is open,
+ * which is seven or eight a minute, and everything else happens at human
+ * speed. A limit that stops a real user is a bug, so these sit well above
+ * that and well below what a script can cost us.
+ *
+ * `/setup` is the one worth guarding: each call reads Horizon, so an unlimited
+ * one lets a stranger spend our rate limit there and take the service down for
+ * the people paying for it.
+ */
+export const RATE_LIMITS = {
+  '/setup': 20,
+  '/transfers': 30,
+  '/claim': 60,
+  '/claimed': 60,
+  '/claimable': 240,
+  '/outbound': 30,
+};
+
+const WINDOW_MS = 60_000;
+
+/** A fixed window per (address, path). Small, in-memory, and swept as it goes. */
+export function createRateLimiter({ limits = RATE_LIMITS, windowMs = WINDOW_MS } = {}) {
+  const seen = new Map();
+
+  return function allow(key, path, now) {
+    const limit = limits[path];
+    if (limit === undefined) return true; // /health and anything unlisted
+
+    const id = `${key} ${path}`;
+    const window = Math.floor(now / windowMs);
+    const record = seen.get(id);
+
+    if (!record || record.window !== window) {
+      // Sweep opportunistically rather than on a timer: the map only grows
+      // while a burst is in flight, and a service that needs a cleanup thread
+      // to answer HTTP has a second thing to get wrong.
+      if (seen.size > 10_000) seen.clear();
+      seen.set(id, { window, count: 1 });
+      return true;
+    }
+
+    record.count += 1;
+    return record.count <= limit;
+  };
+}
+
+export function listen(
+  handle,
+  {
+    port = 8787,
+    createServer,
+    // Which pages may reach this from a browser. `*` was convenient and wrong:
+    // it let any site on the internet make its visitors' browsers call this
+    // service, which is somebody else's traffic spent on our Horizon reads.
+    allowedOrigins = null,
+    maxBodyBytes = MAX_BODY_BYTES,
+    allow = createRateLimiter(),
+    now = () => Date.now(),
+  } = {},
+) {
   const server = createServer(async (req, res) => {
     // The page and the watcher are different origins whichever way this is
     // arranged, a static host and a service, or a local server on one port
     // talking to one on another, so the browser asks permission first and
     // refuses everything without it.
-    res.setHeader('access-control-allow-origin', allowOrigin);
+    const origin = req.headers?.origin;
+    if (!allowedOrigins) {
+      // No list configured: the old behaviour, for a local run where the port
+      // the page is served from changes every time.
+      res.setHeader('access-control-allow-origin', '*');
+    } else if (origin && allowedOrigins.includes(origin)) {
+      res.setHeader('access-control-allow-origin', origin);
+      res.setHeader('vary', 'origin');
+    }
     res.setHeader('access-control-allow-headers', 'content-type');
     res.setHeader('access-control-allow-methods', 'GET, POST, OPTIONS');
 
@@ -286,8 +391,36 @@ export function listen(handle, { port = 8787, createServer, allowOrigin = '*' } 
       return;
     }
 
+    const url = new URL(req.url, 'http://localhost');
+    const caller = String(
+      req.headers?.['x-forwarded-for'] ?? req.socket?.remoteAddress ?? 'unknown',
+    )
+      .split(',')[0]
+      .trim();
+
+    if (!allow(caller, url.pathname, now())) {
+      res.writeHead(429, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'too many requests, try again in a minute' }));
+      return;
+    }
+
     const chunks = [];
-    for await (const chunk of req) chunks.push(chunk);
+    let size = 0;
+    let tooBig = false;
+    for await (const chunk of req) {
+      size += chunk.length;
+      if (size > maxBodyBytes) {
+        tooBig = true;
+        break;
+      }
+      chunks.push(chunk);
+    }
+    if (tooBig) {
+      req.destroy();
+      res.writeHead(413, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'body is larger than this service accepts' }));
+      return;
+    }
 
     let parsed = null;
     if (chunks.length) {
@@ -301,7 +434,6 @@ export function listen(handle, { port = 8787, createServer, allowOrigin = '*' } 
     }
 
     try {
-      const url = new URL(req.url, 'http://localhost');
       const { status, body } = await handle({
         method: req.method,
         path: url.pathname,

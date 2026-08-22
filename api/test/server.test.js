@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createHandler, listen } from '../src/server.js';
+import { createHandler, createRateLimiter, listen } from '../src/server.js';
 import { Store } from '../src/watcher/store.js';
 import { UnpaidBurn } from '../src/watcher/burn.js';
 
@@ -11,18 +11,21 @@ const OTHER = 'GAB4UFSIFR7DQMAUPHFYBXWBWGSDQT3Q3MTQPGMNODG3W5ITNIWJPX2U';
 
 function harness(verifyBurn) {
   const store = new Store();
+  // Counted, so a test can say "nothing was looked up" and mean it.
+  const calls = { verified: 0 };
   return {
     store,
+    calls,
     handle: createHandler({
       store,
-      verifyBurn:
-        verifyBurn ??
-        (async (txHash, recipient) => {
-          if (recipient !== RECIPIENT) {
-            throw new UnpaidBurn(`burn ${txHash} paid for ${RECIPIENT}, not ${recipient}`);
-          }
-          return { txHash, stellarRecipient: RECIPIENT, activate: true };
-        }),
+      verifyBurn: async (txHash, recipient) => {
+        calls.verified += 1;
+        if (verifyBurn) return verifyBurn(txHash, recipient);
+        if (recipient !== RECIPIENT) {
+          throw new UnpaidBurn(`burn ${txHash} paid for ${RECIPIENT}, not ${recipient}`);
+        }
+        return { txHash, stellarRecipient: RECIPIENT, activate: true };
+      },
     }),
   };
 }
@@ -238,4 +241,126 @@ test('a watcher that cannot verify refuses rather than believing the report', as
 
   assert.equal(answer.status, 503);
   assert.equal(store.get(TX).deliveredAt, null);
+});
+
+// --- what a stranger can spend, which is the other kind of attack ---------
+
+/**
+ * None of these take money. They take the thing money buys: a service that
+ * answers. Each was found by pointing the actual attack at the running
+ * watcher rather than by imagining it.
+ */
+
+test('a body larger than the service accepts is refused before it is read', async () => {
+  const fakeServer = { listen() {} };
+  const { handle } = harness();
+  listen(handle, { port: 0, createServer: (h) => ((fakeServer.handler = h), fakeServer) });
+
+  const answered = [];
+  const res = {
+    headers: {},
+    setHeader(k, v) {
+      this.headers[k] = v;
+    },
+    writeHead(status) {
+      answered.push(status);
+      return this;
+    },
+    end() {},
+  };
+
+  let destroyed = false;
+  await fakeServer.handler(
+    {
+      method: 'POST',
+      url: '/transfers',
+      headers: {},
+      destroy() {
+        destroyed = true;
+      },
+      async *[Symbol.asyncIterator]() {
+        yield Buffer.alloc(70 * 1024);
+      },
+    },
+    res,
+  );
+
+  assert.deepEqual(answered, [413]);
+  assert.equal(destroyed, true, 'and the connection is dropped rather than drained');
+});
+
+/// A five megabyte "hash" reached an RPC provider once and came back with
+/// their error message, which means for a moment this was a way to spend
+/// somebody else's quota.
+test('something that is not a hash is refused before anything is asked of a chain', async () => {
+  const { handle, calls } = harness();
+
+  const answer = await handle({
+    method: 'POST',
+    path: '/transfers',
+    body: { txHash: `0x${'a'.repeat(5000)}`, recipient: RECIPIENT },
+  });
+
+  assert.equal(answer.status, 400);
+  assert.equal(calls.verified, 0, 'nothing was looked up on the strength of it');
+});
+
+test('a caller past the limit is refused, and the ones under it are not', () => {
+  const allow = createRateLimiter({ limits: { '/setup': 3 }, windowMs: 60_000 });
+  const now = 1_000_000;
+
+  assert.equal(allow('1.2.3.4', '/setup', now), true);
+  assert.equal(allow('1.2.3.4', '/setup', now), true);
+  assert.equal(allow('1.2.3.4', '/setup', now), true);
+  assert.equal(allow('1.2.3.4', '/setup', now), false, 'the fourth in a minute');
+
+  // Somebody else is not paying for that.
+  assert.equal(allow('5.6.7.8', '/setup', now), true);
+  // Nor is the same caller a minute later.
+  assert.equal(allow('1.2.3.4', '/setup', now + 60_000), true);
+  // And a route with no limit is not one.
+  assert.equal(allow('1.2.3.4', '/health', now), true);
+});
+
+/// The interface polls the claim list every eight seconds. A limit that stops
+/// that is a bug, so this is the test that keeps the numbers honest.
+test('the real interface stays well under its own limit', () => {
+  const allow = createRateLimiter();
+  const now = 2_000_000;
+  // Eight a minute is what the page does; do ten times that.
+  for (let i = 0; i < 80; i += 1) {
+    assert.equal(allow('1.2.3.4', '/claimable', now), true, `poll ${i} was refused`);
+  }
+});
+
+test('a page nobody allowed gets no permission to read the answer', async () => {
+  const fakeServer = { listen() {} };
+  const { handle } = harness();
+  listen(handle, {
+    port: 0,
+    createServer: (h) => ((fakeServer.handler = h), fakeServer),
+    allowedOrigins: ['https://cctpgate.vercel.app'],
+  });
+
+  const res = {
+    headers: {},
+    setHeader(k, v) {
+      this.headers[k] = v;
+    },
+    writeHead() {
+      return this;
+    },
+    end() {},
+  };
+  await fakeServer.handler(
+    {
+      method: 'OPTIONS',
+      url: '/claimable',
+      headers: { origin: 'https://evil.example' },
+      async *[Symbol.asyncIterator]() {},
+    },
+    res,
+  );
+
+  assert.equal(res.headers['access-control-allow-origin'], undefined);
 });

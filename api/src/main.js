@@ -208,6 +208,15 @@ export async function main(env = process.env) {
   // only thing they both need to see.
   const pulse = createPulse();
 
+  // Which pages may reach this from a browser. The deployment, and the two
+  // ports a local run is served from. Set BRIDGE_ALLOWED_ORIGINS to change it
+  // without a code edit; leave it empty and any origin is allowed, which is
+  // what a laptop with a shifting port number needs.
+  const allowedOrigins = (env.BRIDGE_ALLOWED_ORIGINS ?? '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+
   const server = listen(createHandler({
       store: parts.store,
       verifyBurn: parts.verifyBurn,
@@ -219,6 +228,7 @@ export async function main(env = process.env) {
     }), {
     port: parts.port,
     createServer,
+    allowedOrigins: allowedOrigins.length ? allowedOrigins : null,
   });
 
   const stop = () => {
