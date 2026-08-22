@@ -232,6 +232,9 @@ const STATUS = {
   nothing: ['is-ok', '✓', '<b>Ready to receive.</b><span class="sub">This account already holds USDC. Nothing to set up and nothing extra to pay.</span>'],
   trustline: ['is-ok', '✓', '<b>We will add the USDC trustline.</b><span class="sub">Your account covers its own half XLM reserve, so this costs you nothing beyond the bridge fee.</span>'],
   fund: ['is-warn', '+', '<b>This address cannot hold USDC yet.</b><span class="sub">We will send it 3 XLM so it can, and add the trustline. Charged once, and only to addresses that need it.</span>'],
+  // Stellar requires the sponsored account to sign for itself, so this one is
+  // not a preference we could waive: it is the ledger's rule.
+  notYours: ['is-bad', '!', '<b>Only this address can set itself up.</b><span class="sub">Stellar makes a new account sign for its own sponsorship, so it has to be the wallet you are connected with. Connect that one, or have its owner make the transfer.</span>'],
   error: ['is-bad', '!', '<b>Could not reach Horizon.</b><span class="sub">The address may still be fine; we simply could not check it just now.</span>'],
   // Pasting the address you are sending FROM is the commonest slip there is,
   // and answering it with "the checksum does not match" is technically true
@@ -713,7 +716,17 @@ async function checkDestination() {
     const result = await inspect(address);
     if (token !== checkToken) return; // a newer check overtook this one
     state.inspection = result;
-    setStatus(result.needs === 'nothing' ? 'nothing' : result.fundsUser ? 'fund' : 'trustline');
+    const notOurs =
+      result.fundsUser === true && state.stellar !== null && address !== state.stellar;
+    setStatus(
+      notOurs
+        ? 'notYours'
+        : result.needs === 'nothing'
+          ? 'nothing'
+          : result.fundsUser
+            ? 'fund'
+            : 'trustline',
+    );
   } catch {
     if (token !== checkToken) return;
     setStatus('error');
@@ -753,11 +766,25 @@ function render() {
   // The words for the ends, rather than the ones the page started life with.
   el.destLabel.textContent = `${CHAINS[state.to].name} address`;
   el.qArrives.textContent = `Arrives on ${CHAINS[state.to].name}`;
+  // Sponsoring an account is a two-signature act: Stellar will not let one
+  // account be sponsored into existence without the sponsored key signing for
+  // itself. So a destination that needs setting up can only be paid by the
+  // person holding it. Anyone else would sign with the wrong key, the setup
+  // would fail after the burn had already happened, and they would have paid
+  // for a sponsorship that could never land. Caught here, before the money
+  // moves, rather than discovered afterwards.
+  const sponsoringSomeoneElse =
+    activate &&
+    !outbound &&
+    state.stellar !== null &&
+    el.dest.value.trim().toUpperCase() !== state.stellar;
+
   const ready =
     route.status.ok &&
     state.evm &&
     state.stellar &&
     state.inspection &&
+    !sponsoringSomeoneElse &&
     amount !== null &&
     amount >= floor;
 
@@ -772,13 +799,15 @@ function render() {
           ? 'Enter an amount'
           : amount < floor
             ? `Minimum ${formatUsdc(floor)} USDC${activate ? ' with activation' : ''}`
-            : !CONFIG.bridge
-              ? 'Not deployed yet'
-              : outbound
-                ? `Bridge to ${CHAINS[state.to].name}`
-                : activate
-                  ? 'Sign the account setup'
-                  : 'Bridge to Stellar';
+            : sponsoringSomeoneElse
+              ? 'Only this address can set itself up'
+              : !CONFIG.bridge
+                ? 'Not deployed yet'
+                : outbound
+                  ? `Bridge to ${CHAINS[state.to].name}`
+                  : activate
+                    ? 'Sign the account setup'
+                    : 'Bridge to Stellar';
 
   // Only while nothing is in flight. `render` runs on every keystroke and on
   // every history redraw, so without this a transfer's progress would be wiped
