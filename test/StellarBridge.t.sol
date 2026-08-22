@@ -158,43 +158,43 @@ contract StellarBridgeTest is Test {
         assertEq(fee, 0.5e6, "half a percent and not a cent more");
     }
 
-    function test_activationAddsFiveDollarsAndNothingElse() public {
+    function test_sponsorshipAddsThreeDollarsAndNothingElse() public {
         vm.prank(user);
-        (uint256 net, uint256 fee) = bridge.bridge(100e6, RECIPIENT, true, 5e6);
+        (uint256 net, uint256 fee) = bridge.bridge(100e6, RECIPIENT, true, 3e6);
 
-        assertEq(fee, 0.5e6 + 5e6, "the percentage plus the account");
-        assertEq(net, 94.5e6);
+        assertEq(fee, 0.5e6 + 3e6, "the percentage plus the account");
+        assertEq(net, 96.5e6);
     }
 
     /// @dev The three XLM are bought with this money, so it has to stay here
     /// rather than ride along to Stellar with the rest.
-    function test_activationMoneyStaysToBuyTheXlm() public {
+    function test_sponsorshipMoneyStaysToBuyTheXlm() public {
         vm.prank(user);
-        bridge.bridge(100e6, RECIPIENT, true, 5e6);
+        bridge.bridge(100e6, RECIPIENT, true, 3e6);
 
-        assertEq(usdc.balanceOf(address(bridge)), 5.5e6, "the percentage and the account");
-        assertEq(bridge.accruedFees(), 5.5e6, "withdrawable, and it funds the sponsor wallet");
-        assertEq(messenger.recorded().amount, 94.5e6, "only the rest is burned");
+        assertEq(usdc.balanceOf(address(bridge)), 3.5e6, "the percentage and the account");
+        assertEq(bridge.accruedFees(), 3.5e6, "withdrawable, and it funds the sponsor wallet");
+        assertEq(messenger.recorded().amount, 96.5e6, "only the rest is burned");
     }
 
     function test_quoteAgreesWithWhatIsCharged() public {
         (uint256 quotedNet, uint256 quotedFee) = bridge.quote(250e6, true);
 
         vm.prank(user);
-        (uint256 net, uint256 fee) = bridge.bridge(250e6, RECIPIENT, true, 5e6);
+        (uint256 net, uint256 fee) = bridge.bridge(250e6, RECIPIENT, true, 3e6);
 
         assertEq(net, quotedNet);
         assertEq(fee, quotedFee);
     }
 
-    /// @dev Five dollars of fee out of a four dollar transfer is not a
-    /// transfer, so the floor rises with the activation.
-    function test_activationRaisesTheFloor() public {
+    /// @dev Three dollars of fee out of a three dollar transfer is not a
+    /// transfer, so the floor rises with the sponsorship.
+    function test_sponsorshipRaisesTheFloor() public {
         vm.prank(user);
         vm.expectRevert(
-            abi.encodeWithSelector(StellarBridge.AmountTooSmall.selector, uint256(4e6), uint256(6e6))
+            abi.encodeWithSelector(StellarBridge.AmountTooSmall.selector, uint256(3e6), uint256(4e6))
         );
-        bridge.bridge(4e6, RECIPIENT, true, 5e6);
+        bridge.bridge(3e6, RECIPIENT, true, 3e6);
 
         // The same amount is fine without it.
         vm.prank(user);
@@ -208,7 +208,7 @@ contract StellarBridgeTest is Test {
     /// @dev It has to move: the cost is three XLM and the fee is dollars.
     function test_ownerCanRepriceActivation() public {
         vm.expectEmit(false, false, false, true, address(bridge));
-        emit ActivationFeeUpdated(5e6, 8e6);
+        emit ActivationFeeUpdated(3e6, 8e6);
 
         vm.prank(owner);
         bridge.setActivationFee(8e6);
@@ -261,9 +261,9 @@ contract StellarBridgeTest is Test {
 
         vm.prank(user);
         vm.expectRevert(
-            abi.encodeWithSelector(StellarBridge.ActivationFeeChanged.selector, uint256(15e6), uint256(5e6))
+            abi.encodeWithSelector(StellarBridge.ActivationFeeChanged.selector, uint256(15e6), uint256(3e6))
         );
-        bridge.bridge(100e6, RECIPIENT, true, 5e6);
+        bridge.bridge(100e6, RECIPIENT, true, 3e6);
     }
 
     /// @dev A cut in the caller's favour is not a surprise, so it goes through
@@ -273,7 +273,7 @@ contract StellarBridgeTest is Test {
         bridge.setActivationFee(2e6);
 
         vm.prank(user);
-        (, uint256 fee) = bridge.bridge(100e6, RECIPIENT, true, 5e6);
+        (, uint256 fee) = bridge.bridge(100e6, RECIPIENT, true, 3e6);
         assertEq(fee, 0.5e6 + 2e6, "charged the new price, not the quoted one");
     }
 
@@ -446,12 +446,14 @@ contract StellarBridgeTest is Test {
         bridge.bridge(1000e6, RECIPIENT, false, 0);
     }
 
-    function test_emitsTheActivationItWasPaidFor() public {
+    function test_emitsTheSponsorshipItWasPaidFor() public {
+        // 1000 in, five basis points of it plus the three dollar sponsorship
+        // out, and the event says so rather than leaving it to be inferred.
         vm.expectEmit(true, false, false, true, address(bridge));
-        emit Bridged(user, RECIPIENT, 1000e6, 990e6, 10e6, 0x30, true);
+        emit Bridged(user, RECIPIENT, 1000e6, 992e6, 8e6, 0x30, true);
 
         vm.prank(user);
-        bridge.bridge(1000e6, RECIPIENT, true, 5e6);
+        bridge.bridge(1000e6, RECIPIENT, true, 3e6);
     }
 
     // --- fees and ownership ----------------------------------------------

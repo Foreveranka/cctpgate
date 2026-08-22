@@ -309,7 +309,7 @@ export async function claimOnEvm({
  * The mirror of {step}, and missing its middle: there is no provisioning here,
  * so it is only ever wait-for-Circle then claim.
  */
-export async function reverseStep(transfer, { store, attestOut, claim }) {
+export async function reverseStep(transfer, { store, attestOut }) {
   if (transfer.deliveredAt) return { action: 'done', reason: 'already claimed' };
 
   // Deliberately not the same `attest` the inbound step uses. Circle files
@@ -325,17 +325,13 @@ export async function reverseStep(transfer, { store, attestOut, claim }) {
     };
   }
 
-  // The EVM side wants `0x`; the Stellar side wanted it stripped.
-  const claimed = await claim(`0x${attestation.message}`, `0x${attestation.attestation}`);
-
-  if (claimed.done) {
-    store.markDelivered(transfer.txHash, claimed.hash ?? null);
-    return { action: 'done', reason: 'already claimed' };
-  }
-  if (!claimed.ok) {
-    return { action: 'retry-claim', reason: claimed.reason };
-  }
-
-  store.markDelivered(transfer.txHash, claimed.hash);
-  return { action: 'claimed', hash: claimed.hash };
+  // Handed over, exactly as the other direction is. The mint on Avalanche is a
+  // permissionless call and it belongs to whoever the burn named; making it for
+  // them would break the one promise the product is built on, that a user's
+  // money is never ours to move. The EVM side wants `0x`, so it is kept here.
+  store.markClaimable(transfer.txHash, {
+    message: `0x${attestation.message}`,
+    attestation: `0x${attestation.attestation}`,
+  });
+  return { action: 'claimable', reason: 'ready to claim' };
 }

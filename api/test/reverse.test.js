@@ -144,25 +144,27 @@ test('the outbound attestation is asked for separately', async () => {
   assert.equal(askedInbound, false, 'the inbound one is for domain 6');
 });
 
-test('an attested burn is claimed on the EVM side', async () => {
+test('an attested burn is handed to the recipient, not claimed for them', async () => {
   const { store, deps, calls } = harness();
   const transfer = store.remember({ txHash: TX, recipient: RECIPIENT });
 
   const result = await reverseStep(transfer, deps);
 
-  assert.equal(result.action, 'claimed');
-  assert.equal(store.get(TX).deliveredAt.stellarTxHash, '0xclaimed');
-  assert.equal(calls.length, 1);
+  assert.equal(result.action, 'claimable');
+  assert.equal(store.get(TX).deliveredAt, null, 'nothing was minted on their behalf');
+  assert.equal(calls.length, 0, 'and nothing was signed for them either');
+  assert.equal(store.claimable().length, 1);
 });
 
-/// The Stellar side wanted the hex bare; the EVM side wants it prefixed. A
-/// message handed over without the prefix is not a message.
+/// The Stellar side wanted the hex bare; the EVM side wants it prefixed. What
+/// is stored is what the wallet will be handed, so it is stored prefixed.
 test('the message is prefixed on the way out', async () => {
-  const { store, deps, calls } = harness();
+  const { store, deps } = harness();
   await reverseStep(store.remember({ txHash: TX, recipient: RECIPIENT }), deps);
 
-  assert.equal(calls[0].message, '0xdeadbeef');
-  assert.equal(calls[0].attestation, '0xc0ffee');
+  const held = store.get(TX).claimable;
+  assert.equal(held.message, '0xdeadbeef');
+  assert.equal(held.attestation, '0xc0ffee');
 });
 
 test('nothing is claimed before Circle has attested', async () => {
@@ -174,26 +176,27 @@ test('nothing is claimed before Circle has attested', async () => {
   assert.equal(calls.length, 0);
 });
 
-test('a refused claim is retried and not written off', async () => {
-  const { store, deps } = harness({
-    claim: async () => ({ ok: false, retryable: true, reason: 'the node was busy' }),
-  });
+/// Handing it over is the end of our work on it. A transfer waiting on its
+/// recipient is not a job the watcher is still failing to do.
+test('a handed-over transfer leaves the work queue', async () => {
+  const { store, deps } = harness();
 
-  const result = await reverseStep(store.remember({ txHash: TX, recipient: RECIPIENT }), deps);
+  await reverseStep(store.remember({ txHash: TX, recipient: RECIPIENT }), deps);
 
-  assert.equal(result.action, 'retry-claim');
-  assert.equal(store.pending().length, 1, 'it stays on the queue');
+  assert.equal(store.pending().length, 0);
+  assert.equal(store.claimable().length, 1);
 });
 
-test('a message already used is recorded rather than retried forever', async () => {
-  const { store, deps } = harness({
-    claim: async () => ({ ok: false, done: true, reason: 'already claimed' }),
-  });
+/// The claim was the recipient's, so the only way it is ever recorded is the
+/// interface saying it landed.
+test('a landed claim is recorded and closes the transfer', async () => {
+  const { store, deps } = harness();
 
-  const result = await reverseStep(store.remember({ txHash: TX, recipient: RECIPIENT }), deps);
+  await reverseStep(store.remember({ txHash: TX, recipient: RECIPIENT }), deps);
+  store.markDelivered(TX, '0xclaimed');
 
-  assert.equal(result.action, 'done');
-  assert.equal(store.pending().length, 0);
+  assert.equal(store.get(TX).deliveredAt.stellarTxHash, '0xclaimed');
+  assert.equal(store.claimable().length, 0);
 });
 
 test('a claimed transfer is left alone', async () => {

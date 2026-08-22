@@ -34,11 +34,14 @@ Three parts, and the smallest one is the only contract we deploy.
 | Part | What it does |
 |---|---|
 | Avalanche contract | Takes the user's USDC, separates the service fee, burns the rest toward the destination. Holds no funds, takes no custody. |
-| Watcher | Follows Circle's attestation and delivers on the far side: the forwarder call on Stellar, `receiveMessage` on EDGE. |
+| Watcher | Follows Circle's attestation, prepares the destination account, then hands the message over. It never mints for anyone. |
 | Web interface | Connect a wallet, enter an amount and a destination, send. |
 
-Delivery on the destination chains happens through permissionless calls to
-Circle's existing contracts, so **nothing has to be deployed there.**
+The mint on the destination chain is a permissionless call to Circle's existing
+contracts, so **nothing has to be deployed there** and **we never sign a
+movement of user money**. The recipient makes that call themselves, from the
+interface, whenever they choose. A claim that is late, or refused, does not
+consume the message: it still works tomorrow.
 
 ## The Stellar problem this solves
 
@@ -47,8 +50,12 @@ a trustline. A first-time user hits all three walls at once and a plain bridge
 leaves them there: the USDC lands and they can do nothing with it.
 
 CCTPGate reads what the destination account is missing and makes it ready as
-part of the transfer. The user arrives with spendable USDC and never has to
-hold XLM. The account stays theirs: nothing here generates or custodies a key.
+part of the transfer: the account, the trustline, and enough XLM left over for
+the account to pay for its own next transaction, including the claim. The
+account stays theirs, and nothing here generates or custodies a key.
+
+That is what the fee buys. Three USDC, charged once, and only to an address
+that cannot hold USDC without it.
 
 ## Status
 
@@ -69,7 +76,7 @@ Roadmap:
 ```
 src/          Solidity: the source-side contract and Stellar address decoding
 script/       Deploy script, every argument read from the environment
-api/          Watcher service: attestation tracking and far-side delivery
+api/          Watcher service: attestation tracking, account setup, claim building
 web/          The interface
 test/         Foundry tests
 ```
@@ -99,6 +106,10 @@ Avalanche Fuji, verified on chain before being written down here:
 | CCTP v2 TokenMessenger | `0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA` |
 | CCTP v2 MessageTransmitter | `0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275` |
 | CCTP domain | `1` |
+
+## Deployments
+
+What is on chain and the transfers that ran through it: [DEPLOYMENTS.md](DEPLOYMENTS.md).
 
 ## Links
 

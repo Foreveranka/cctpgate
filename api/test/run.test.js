@@ -270,7 +270,7 @@ test('a starting ledger older than the node keeps is pulled forward', async () =
 });
 
 /// And a burn out of Stellar becomes work, which is the point of all of it.
-test('a burn leaving Stellar is claimed on the EVM side', async () => {
+test('a burn leaving Stellar becomes something its recipient can claim', async () => {
   const store = new Store();
   const controller = new AbortController();
   const seen = [];
@@ -292,12 +292,12 @@ test('a burn leaving Stellar is claimed on the EVM side', async () => {
     attest: async () => ({ ready: false }),
     deliver: async () => ({ ok: true }),
     attestOut: async () => ({ ready: true, message: 'de', attestation: 'ad' }),
-    claim: async () => ({ ok: true, hash: '0xclaimed' }),
   });
 
-  await until(() => store.get(TX_OUT)?.deliveredAt, controller);
+  await until(() => store.get(TX_OUT)?.claimable, controller);
   await loop;
 
   assert.equal(store.get(TX_OUT).direction, 'out');
-  assert.equal(store.get(TX_OUT).deliveredAt.stellarTxHash, '0xclaimed');
+  assert.equal(store.get(TX_OUT).claimable.message, '0xde', 'prefixed, as the EVM side wants it');
+  assert.equal(store.get(TX_OUT).deliveredAt, null, 'and nothing was claimed for them');
 });

@@ -9,7 +9,7 @@
  */
 
 import { strkeyKind, underlyingAccount } from './strkey.js';
-import { encodeApprove, encodeBridge } from './abi.js';
+import { encodeApprove, encodeBridge, encodeReceiveMessage } from './abi.js';
 import { parseEnvelope, assertOnlyAskingForTrustline, assertBurnsYourOwnUsdc } from './envelope.js';
 import { CHAINS, routeStatus, fillChainPicker } from './chains.js';
 import * as history from './history.js';
@@ -34,9 +34,12 @@ import {
  * origin carries no such invitation: anyone who can change it already serves
  * the page.
  */
-/// Where the hosted watcher answers, once there is one. Null until then, and
-/// the page is honest about what that costs rather than pretending.
-const HOSTED_WATCHER = null;
+/// Where the hosted watcher answers. This is a tunnel to the machine running
+/// it, which is honest about what it is: a testnet service on one computer,
+/// not infrastructure. When that changes, this line and the CSP change with it.
+/// Null here makes the page say the service is down rather than fail with a
+/// network error nobody can act on.
+const HOSTED_WATCHER = 'https://cars-mortality-marcus-alpine.trycloudflare.com';
 
 function watcherOrigin() {
   const { protocol, hostname } = window.location;
@@ -73,6 +76,10 @@ const CONFIG = {
   // `connect-src` in vercel.json as well. Serving the page over http still
   // reaches a local one, which is what a second machine on the network needs.
   api: watcherOrigin(),
+
+  /// Circle's MessageTransmitterV2, where a claim coming back to Avalanche is
+  /// made. The same address on every EVM testnet.
+  transmitter: '0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275',
 
   // The source chain. Avalanche Fuji while this is on testnet; the mainnet
   // C-Chain is 0xa86a and the same three fields carry it.
@@ -888,7 +895,7 @@ function explorerFor(entry) {
 /// Everything waiting on the connected Stellar address.
 async function renderClaims() {
   if (!el.claimCard) return;
-  if (!state.stellar) {
+  if (!state.stellar && !state.evm) {
     el.claimCard.hidden = true;
     return;
   }
@@ -897,7 +904,14 @@ async function renderClaims() {
   try {
     const { status, body } = await api('/claimable');
     if (status === 200) {
-      waiting = (body.transfers ?? []).filter((t) => t.recipient === state.stellar);
+      // Whichever address is connected, we list what is waiting for it: the
+      // Stellar one for transfers coming in, the EVM one for transfers going
+      // out. The recipient of a burn is the only person the money can go to.
+      waiting = (body.transfers ?? []).filter((t) =>
+        t.direction === 'out'
+          ? state.evm && t.recipient.toLowerCase() === state.evm.slice(2).toLowerCase()
+          : t.recipient === state.stellar,
+      );
     }
   } catch {
     // The watcher being unreachable is not the user's problem to read about
@@ -945,6 +959,20 @@ async function claim(txHash, button) {
     const built = await api('/claim', { txHash, source: state.stellar });
     if (built.status !== 200) {
       throw new Error(built.body?.error ?? built.body?.reason ?? 'the claim could not be built');
+    }
+
+    // Landing on an EVM chain, the browser builds the call itself and the
+    // wallet pays for it. There is nothing to simulate and nothing for us to
+    // sign.
+    if (built.body.kind === 'evm') {
+      const data = encodeReceiveMessage(built.body.message, built.body.attestation);
+      const hash = await sendEvm(CONFIG.transmitter, data);
+      const receipt = await waitForReceipt(hash);
+      if (receipt?.status !== '0x1') throw new Error('the claim reverted');
+      await api('/claimed', { txHash, stellarTxHash: hash });
+      setStatus('done', 'Claimed. The USDC is in your wallet.');
+      await renderClaims();
+      return;
     }
 
     const signed = await signWithStellar(state.stellarWallet, built.body.xdr, {

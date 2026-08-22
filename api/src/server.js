@@ -140,13 +140,30 @@ export function createHandler({
         return json(202, { status: 'pending', retry: true, reason: 'not attested yet' });
       }
 
+      // Going out, the claim lands on an EVM chain, where the browser can build
+      // the call itself and no simulation is needed. So the two halves of the
+      // message are handed over as they are and the wallet does the rest.
+      if (transfer.direction === 'out') {
+        return json(200, {
+          kind: 'evm',
+          message: transfer.claimable.message,
+          attestation: transfer.claimable.attestation,
+          recipient: transfer.recipient,
+        });
+      }
+
       try {
         const built = await buildClaim({
           source: source ?? transfer.recipient,
           message: transfer.claimable.message,
           attestation: transfer.claimable.attestation,
         });
-        return json(200, { xdr: built.xdr, source: built.source, recipient: transfer.recipient });
+        return json(200, {
+          kind: 'stellar',
+          xdr: built.xdr,
+          source: built.source,
+          recipient: transfer.recipient,
+        });
       } catch (error) {
         return json(400, { error: String(error?.message ?? error) });
       }
@@ -180,6 +197,7 @@ export function createHandler({
         transfers: store.claimable().map((t) => ({
           txHash: t.txHash,
           recipient: t.recipient,
+          direction: t.direction ?? 'in',
           since: t.claimable.at,
         })),
       });

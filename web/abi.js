@@ -41,3 +41,38 @@ export function encodeBridge(amount, recipient, activate, acceptedActivationFee)
     padded
   );
 }
+
+/// keccak256("receiveMessage(bytes,bytes)")[0:4], checked with `cast sig`.
+export const RECEIVE_SELECTOR = '0x57ecfd28';
+
+/**
+ * The claim on the EVM side, which the recipient signs themselves.
+ *
+ * Two dynamic arguments, so both travel out of line: two offset words, then
+ * each length followed by its bytes padded to a word. The same care as
+ * {encodeBridge} applies and for the same reason, a wrong offset is calldata
+ * that decodes to something else entirely and reverts after it has been paid
+ * for.
+ */
+export function encodeReceiveMessage(message, attestation) {
+  const strip = (hex) => hex.replace(/^0x/, '');
+  const pad = (hex) => hex.padEnd(Math.ceil(hex.length / 64) * 64, '0');
+
+  const m = strip(message);
+  const a = strip(attestation);
+  const mBytes = m.length / 2;
+  const aBytes = a.length / 2;
+
+  // Two head words, then the message: length word plus its padded body.
+  const attestationOffset = 64 + 32 + Math.ceil(mBytes / 32) * 32;
+
+  return (
+    RECEIVE_SELECTOR +
+    word(64) +
+    word(attestationOffset) +
+    word(mBytes) +
+    pad(m) +
+    word(aBytes) +
+    pad(a)
+  );
+}

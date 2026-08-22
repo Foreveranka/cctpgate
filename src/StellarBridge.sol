@@ -172,7 +172,7 @@ contract StellarBridge is Ownable2Step, ReentrancyGuard {
      * states the price they accepted, so it cannot be moved out from under a
      * transaction already in the mempool.
      */
-    uint256 public activationFee = 5e6; // 5 USDC
+    uint256 public activationFee = 3e6; // 3 USDC
 
     /**
      * @notice What Circle is authorised to take out of a burn, in basis
