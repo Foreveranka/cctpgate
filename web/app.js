@@ -933,14 +933,22 @@ async function renderClaims() {
   try {
     const { status, body } = await api('/claimable');
     if (status === 200) {
-      // Whichever address is connected, we list what is waiting for it: the
-      // Stellar one for transfers coming in, the EVM one for transfers going
-      // out. The recipient of a burn is the only person the money can go to.
-      waiting = (body.transfers ?? []).filter((t) =>
-        t.direction === 'out'
-          ? state.evm && t.recipient.toLowerCase() === state.evm.slice(2).toLowerCase()
-          : t.recipient === state.stellar,
-      );
+      // Two kinds of thing belong on this list.
+      //
+      // What is waiting for the connected address, because that is whose money
+      // it is. And what this browser sent to somebody else, because the mint is
+      // permissionless: the money lands in the address the burn named no matter
+      // who submits the call, so a sender can finish a transfer for a friend
+      // and pay nothing but the fee. Nobody can claim it away from its owner,
+      // which is why offering it is safe.
+      const mine = new Set(history.all().map((h) => h.txHash));
+      waiting = (body.transfers ?? []).map((t) => {
+        const forMe =
+          t.direction === 'out'
+            ? Boolean(state.evm) && t.recipient.toLowerCase() === state.evm.slice(2).toLowerCase()
+            : t.recipient === state.stellar;
+        return { ...t, forMe, sentByMe: mine.has(t.txHash) };
+      }).filter((t) => t.forMe || t.sentByMe);
     }
   } catch {
     // The watcher being unreachable is not the user's problem to read about
@@ -959,16 +967,18 @@ async function renderClaims() {
     const left = document.createElement('div');
     const amt = document.createElement('div');
     amt.className = 'amt';
-    amt.textContent = 'USDC waiting';
+    amt.textContent = item.forMe ? 'USDC waiting for you' : 'USDC waiting for the address you paid';
     const to = document.createElement('div');
     to.className = 'to';
-    to.textContent = `burn ${item.txHash.slice(0, 10)}…`;
+    to.textContent = item.forMe
+      ? `burn ${item.txHash.slice(0, 10)}…`
+      : `${item.recipient.slice(0, 8)}… · you pay only the fee`;
     left.append(amt, to);
 
     const take = document.createElement('button');
     take.className = 'take';
     take.type = 'button';
-    take.textContent = 'Claim';
+    take.textContent = item.forMe ? 'Claim' : 'Claim for them';
     take.addEventListener('click', () => claim(item.txHash, take));
 
     row.append(left, take);
