@@ -51,7 +51,7 @@ const CONFIG = {
   network: 'testnet',
 
   // Filled in after deployment. Empty on purpose until then.
-  bridge: '0x69752D7C3d1c7C919bc24e34cD440762F642FF00',
+  bridge: '0x40966f7959834845d9dc82bdf04755ca3034af0f',
 
   // Where the watcher listens. It builds the setup, the channel's sequence
   // number and the funder's address are not the browser's business, and it
