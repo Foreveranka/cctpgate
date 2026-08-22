@@ -28,6 +28,9 @@ export const STATES = {
   BURNED: 'burned',
   /// The account exists and holds a USDC trustline.
   PROVISIONED: 'provisioned',
+  /// Circle has attested and the message is waiting for the user to claim it.
+  /// We do not claim on anyone's behalf; the mint is the recipient's own call.
+  CLAIMABLE: 'claimable',
   /// USDC is in the user's account.
   DELIVERED: 'delivered',
 };

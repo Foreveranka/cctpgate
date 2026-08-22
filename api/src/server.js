@@ -32,6 +32,9 @@ export function createHandler({
   verifyBurn,
   buildSetup = null,
   buildOutbound = null,
+  // Builds the forwarder call the recipient signs. Optional so a watcher that
+  // only follows one direction still starts.
+  buildClaim = null,
   // From {createPulse}, written by the follower loop. Optional: without one
   // the endpoint answers as it always did, which keeps every existing caller
   // and test working.
@@ -114,6 +117,53 @@ export function createHandler({
         if (error instanceof DoublePayment) return json(409, { error: error.message });
         throw error;
       }
+    }
+
+    /**
+     * Builds the claim, for the recipient to sign.
+     *
+     * The mint is theirs to make: they were sold a working account, not a
+     * courier. This hands back an unsigned, already-simulated envelope, and
+     * it records nothing, because a user who asks and walks away has cost us
+     * one RPC read and the message stays claimable either way.
+     */
+    if (method === 'POST' && path === '/claim') {
+      if (!buildClaim) return json(501, { error: 'this watcher does not build claims' });
+
+      const { txHash, source = null } = body ?? {};
+      if (!txHash) return json(400, { error: 'txHash is required' });
+
+      const transfer = store.get(txHash);
+      if (!transfer) return json(404, { error: 'no record of that burn' });
+      if (transfer.deliveredAt) return json(409, { error: 'already claimed' });
+      if (!transfer.claimable) {
+        return json(202, { status: 'pending', retry: true, reason: 'not attested yet' });
+      }
+
+      try {
+        const built = await buildClaim({
+          source: source ?? transfer.recipient,
+          message: transfer.claimable.message,
+          attestation: transfer.claimable.attestation,
+        });
+        return json(200, { xdr: built.xdr, source: built.source, recipient: transfer.recipient });
+      } catch (error) {
+        return json(400, { error: String(error?.message ?? error) });
+      }
+    }
+
+    /**
+     * What is waiting to be claimed. The interface polls this to know which
+     * transfers still have a button on them.
+     */
+    if (method === 'GET' && path === '/claimable') {
+      return json(200, {
+        transfers: store.claimable().map((t) => ({
+          txHash: t.txHash,
+          recipient: t.recipient,
+          since: t.claimable.at,
+        })),
+      });
     }
 
     /**

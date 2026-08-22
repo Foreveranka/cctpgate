@@ -34,16 +34,30 @@ function harness(overrides = {}) {
   return { store, deps, calls };
 }
 
-test('a transfer with everything in place is provisioned and delivered', async () => {
+test('a transfer with everything in place is provisioned and handed over', async () => {
   const { store, deps, calls } = harness();
   const transfer = store.remember({ txHash: TX, recipient: RECIPIENT, setupXdr: 'XDR' });
 
   const result = await step(transfer, deps);
 
-  assert.equal(result.action, 'delivered');
+  assert.equal(result.action, 'claimable');
   assert.equal(calls.setups, 1);
-  assert.equal(calls.deliveries, 1);
-  assert.equal(store.get(TX).deliveredAt.stellarTxHash, 'stellar-hash');
+  // The account was made usable. The mint is not ours to make and never runs.
+  assert.equal(calls.deliveries, 0);
+  assert.equal(store.get(TX).deliveredAt, null);
+  assert.ok(store.get(TX).claimable.message, 'the message is kept for the claim');
+});
+
+/// The whole point of handing it over: the watcher stops working on it. A
+/// transfer waiting on its recipient is not a job we are still failing to do.
+test('a claimable transfer leaves the work queue', async () => {
+  const { store, deps } = harness();
+  const transfer = store.remember({ txHash: TX, recipient: RECIPIENT, setupXdr: 'XDR' });
+
+  await step(transfer, deps);
+
+  assert.equal(store.pending().length, 0, 'nothing left for the watcher');
+  assert.equal(store.claimable().length, 1, 'and one thing left for the user');
 });
 
 /**
@@ -172,33 +186,34 @@ test('a setup that was already done counts as provisioned', async () => {
   assert.equal(store.get(TX).provisioned, true);
 });
 
-test('a refused delivery is retried and not marked done', async () => {
-  const { store, deps } = harness({
-    deliver: async () => ({ ok: false, retryable: true, reason: 'no trustline yet' }),
-  });
+/// A claim that fails costs the recipient a fee and nothing else: the CCTP
+/// message is not consumed by a failed forward, so it stays claimable. The
+/// watcher records nothing about attempts it did not make.
+test('a failed claim leaves the transfer claimable', async () => {
+  const { store, deps } = harness();
   const transfer = store.remember({ txHash: TX, recipient: RECIPIENT, setupXdr: 'XDR' });
 
-  const result = await step(transfer, deps);
-
-  assert.equal(result.action, 'retry-delivery');
+  await step(transfer, deps);
+  // The user tried and the trustline was missing. Nothing here changes.
   assert.equal(store.get(TX).deliveredAt, null);
-  assert.equal(store.pending().length, 1, 'it stays on the queue');
+  assert.equal(store.claimable().length, 1);
 });
 
-/// The message was consumed, so an earlier attempt landed. Nothing to redo.
-test('a message already used is recorded, not retried forever', async () => {
-  const { store, deps } = harness({
-    deliver: async () => ({ ok: false, done: true, reason: 'already delivered' }),
-  });
+/// Once the claim lands, the interface says so and the record closes. This is
+/// the only way a transfer is ever marked delivered now.
+test('a landed claim is recorded and the transfer closes', async () => {
+  const { store, deps } = harness();
   const transfer = store.remember({ txHash: TX, recipient: RECIPIENT, setupXdr: 'XDR' });
 
-  const result = await step(transfer, deps);
+  await step(transfer, deps);
+  store.markDelivered(TX, 'stellar-hash');
 
-  assert.equal(result.action, 'done');
+  assert.equal(store.get(TX).deliveredAt.stellarTxHash, 'stellar-hash');
   assert.equal(store.pending().length, 0);
+  assert.equal(store.claimable().length, 0);
 });
 
-test('a fallback to hard finality is delivered and said out loud', async () => {
+test('a fallback to hard finality is handed over and said out loud', async () => {
   const { store, deps } = harness({
     attest: async () => ({ ...READY, fellBackToStandard: true }),
   });
@@ -206,7 +221,7 @@ test('a fallback to hard finality is delivered and said out loud', async () => {
 
   const result = await step(transfer, deps);
 
-  assert.equal(result.action, 'delivered');
+  assert.equal(result.action, 'claimable');
   assert.match(result.reason, /slow road/);
 });
 
@@ -235,7 +250,7 @@ test('one broken transfer does not stop the others', async () => {
 
   assert.equal(results.length, 2);
   assert.equal(results.find((r) => r.txHash === '0xbad').action, 'error');
-  assert.equal(results.find((r) => r.txHash === TX).action, 'delivered');
+  assert.equal(results.find((r) => r.txHash === TX).action, 'claimable');
 });
 
 // --- what a refusal from Stellar means ------------------------------------

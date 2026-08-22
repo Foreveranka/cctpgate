@@ -88,7 +88,7 @@ const CONFIG = {
     // origin is: the page checks the burn it is about to sign against this,
     // and asking the watcher which contract it meant would let a tampered one
     // name its own and answer its own exam.
-    bridgeContract: 'CCWMXUFXXYL6HEL4BYXRPLUXPGI2DEYEOP7TZX7EXWZBOM7WAWWDMWHR',
+    bridgeContract: 'CDTM6T3QGHPJRDTYPNRUH6BELHBWVIX74NFVMSJMYZSHDV7ZABT6MOGJ',
   },
 
   // Mirrors of the contract's constants. If these drift the quote lies, so

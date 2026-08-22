@@ -18,6 +18,7 @@ import { IRIS, fetchAttestation } from './watcher/attestation.js';
 import { deliver, FORWARDER } from './watcher/deliver.js';
 import { submit } from './stellar/activation.js';
 import { buildSetupFor } from './stellar/setup.js';
+import { buildClaim as buildClaimTx } from './stellar/claim.js';
 import { buildOutbound as buildOutboundTx } from './stellar/outbound.js';
 import { claimOnEvm, MESSAGE_TRANSMITTER, STELLAR_DOMAIN } from './watcher/reverse.js';
 import { run } from './watcher/run.js';
@@ -87,6 +88,19 @@ export function assemble(env = process.env) {
           })
       : null;
 
+  // The claim the recipient signs. It needs the same forwarder and RPC the
+  // delivery used to, and none of the keys: nothing here signs.
+  const buildClaim = ({ source, message, attestation }) =>
+    buildClaimTx({
+      rpcUrl: env.BRIDGE_SOROBAN_RPC || 'https://soroban-testnet.stellar.org',
+      networkPassphrase: passphrase,
+      forwarderId: chosen.forwarder,
+      source,
+      message,
+      attestation,
+      baseFee: CFG.baseFee,
+    });
+
   const deliverMessage = (message, attestation) =>
     deliver({
       rpcUrl: env.BRIDGE_SOROBAN_RPC || 'https://soroban-testnet.stellar.org',
@@ -152,6 +166,7 @@ export function assemble(env = process.env) {
     submitSetup,
     deliver: deliverMessage,
     buildSetup,
+    buildClaim,
     port: Number(env.PORT ?? 8787),
     cursor: env.BRIDGE_CURSOR ? Number(env.BRIDGE_CURSOR) : undefined,
   };
@@ -171,6 +186,7 @@ export async function main(env = process.env) {
       verifyBurn: parts.verifyBurn,
       buildSetup: parts.buildSetup,
       buildOutbound: parts.buildOutbound,
+      buildClaim: parts.buildClaim,
       pulse,
     }), {
     port: parts.port,

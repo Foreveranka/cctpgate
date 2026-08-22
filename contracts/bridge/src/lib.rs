@@ -30,8 +30,9 @@ use soroban_sdk::{
 pub const FEE_BPS: i128 = 50;
 pub const BPS_DENOM: i128 = 10_000;
 
-/// Base's CCTP domain.
-pub const DEFAULT_DESTINATION_DOMAIN: u32 = 6;
+/// Avalanche's CCTP domain. The C-Chain is where this direction lands, and
+/// where the forward direction starts from: one chain at the centre, both ways.
+pub const DEFAULT_DESTINATION_DOMAIN: u32 = 1;
 
 /// Soft finality, Circle's fast transfer. The forward direction found that
 /// Stellar takes these despite the documentation reading otherwise; there was

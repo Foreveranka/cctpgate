@@ -18,7 +18,11 @@
  *      inside a fifteen-minute attestation and now happens inside a
  *      twenty-eight second one. Fifteen seconds of margin is not a reason to
  *      do it later.
- *   4. **Deliver.** Nobody else will.
+ *   4. **Hand it over.** The mint is not ours to make. Once Circle has
+ *      attested, the message is recorded as claimable and the watcher is
+ *      done: the recipient submits the forwarder call themselves, from the
+ *      interface, whenever they choose. We were paid to make the account
+ *      usable, not to move somebody else's money for them.
  */
 
 import { STATES } from '../flow.js';
@@ -35,7 +39,7 @@ import { reverseStep } from './reverse.js';
  *          read at three in the morning.
  */
 export async function step(transfer, deps) {
-  const { store, verifyBurn, submitSetup, attest, deliver } = deps;
+  const { store, verifyBurn, submitSetup, attest } = deps;
 
   if (transfer.deliveredAt) {
     return { action: 'done', reason: 'already delivered' };
@@ -85,28 +89,20 @@ export async function step(transfer, deps) {
     };
   }
 
-  // 4. The delivery, which nobody else is going to make.
-  const delivered = await deliver(attestation.message, attestation.attestation);
-
-  if (delivered.done) {
-    // The message was already consumed, so an earlier attempt landed and the
-    // USDC is where it should be. Recording it is the whole remaining job.
-    store.markDelivered(transfer.txHash, delivered.hash ?? null);
-    return { action: 'done', state: STATES.DELIVERED, reason: 'already delivered' };
-  }
-
-  if (!delivered.ok) {
-    return { action: 'retry-delivery', state: STATES.PROVISIONED, reason: delivered.reason };
-  }
-
-  store.markDelivered(transfer.txHash, delivered.hash);
+  // 4. Hand it to the recipient. The message and the attestation are kept so
+  // the interface can build the claim without asking Circle again, and the
+  // transfer leaves the work queue: what remains is the recipient's own
+  // signature, and there is no version of waiting for it that is our job.
+  store.markClaimable(transfer.txHash, {
+    message: attestation.message,
+    attestation: attestation.attestation,
+  });
   return {
-    action: 'delivered',
-    state: STATES.DELIVERED,
-    hash: delivered.hash,
+    action: 'claimable',
+    state: STATES.CLAIMABLE,
     reason: attestation.fellBackToStandard
-      ? 'delivered, though the fast tier was refused and this took the slow road'
-      : 'delivered',
+      ? 'ready to claim, though the fast tier was refused and this took the slow road'
+      : 'ready to claim',
   };
 }
 

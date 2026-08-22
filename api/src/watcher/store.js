@@ -115,6 +115,17 @@ export class Store {
     return transfer;
   }
 
+  /// Circle attested and the message is ready for the recipient to claim.
+  /// The message and its attestation are kept so the claim endpoint can hand
+  /// them to the browser without asking Circle again on every page load.
+  markClaimable(txHash, { message, attestation }) {
+    const transfer = this.transfers.get(txHash);
+    if (!transfer) throw new DoublePayment(`no record of burn ${txHash}`);
+    transfer.claimable = { message, attestation, at: new Date().toISOString() };
+    this.#persist();
+    return transfer;
+  }
+
   markDelivered(txHash, stellarTxHash) {
     const transfer = this.transfers.get(txHash);
     if (!transfer) throw new DoublePayment(`no record of burn ${txHash}`);
@@ -123,8 +134,16 @@ export class Store {
     return transfer;
   }
 
-  /// Everything still owed a delivery, which is the watcher's work queue.
+  /// Everything the watcher still has work to do on. A transfer that is
+  /// claimable is not on this list: the remaining step belongs to the
+  /// recipient, and polling it forever would be the watcher pretending it
+  /// still owns a job it deliberately gave away.
   pending() {
-    return [...this.transfers.values()].filter((t) => !t.deliveredAt);
+    return [...this.transfers.values()].filter((t) => !t.deliveredAt && !t.claimable);
+  }
+
+  /// Everything waiting on its recipient, which is what the interface lists.
+  claimable() {
+    return [...this.transfers.values()].filter((t) => t.claimable && !t.deliveredAt);
   }
 }

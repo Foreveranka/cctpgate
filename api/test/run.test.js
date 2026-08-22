@@ -49,7 +49,7 @@ async function until(check, controller, timeoutMs = 2000) {
   controller.abort();
 }
 
-test('a burn found in a log becomes work, then a delivery', async () => {
+test('a burn found in a log becomes work, then something to claim', async () => {
   const store = new Store();
   const controller = new AbortController();
   const events = [];
@@ -67,16 +67,16 @@ test('a burn found in a log becomes work, then a delivery', async () => {
     verifyBurn: async () => ({ txHash: TX, stellarRecipient: RECIPIENT, activate: true }),
     submitSetup: async () => ({ ok: true }),
     attest: async () => ({ ready: true, message: 'de', attestation: 'ad' }),
-    deliver: async () => ({ ok: true, hash: 'stellar-hash' }),
   });
 
-  await until(() => store.get(TX)?.deliveredAt, controller);
+  await until(() => store.get(TX)?.claimable, controller);
   await loop;
 
   assert.equal(store.get(TX).recipient, RECIPIENT, 'the log alone was enough to know about it');
-  assert.equal(store.get(TX).deliveredAt.stellarTxHash, 'stellar-hash');
+  assert.equal(store.get(TX).claimable.message, 'de', 'the claim is kept for the recipient');
+  assert.equal(store.get(TX).deliveredAt, null, 'and nothing was minted on their behalf');
   assert.ok(events.some((e) => e.event === 'burn'));
-  assert.ok(events.some((e) => e.event === 'step' && e.action === 'delivered'));
+  assert.ok(events.some((e) => e.event === 'step' && e.action === 'claimable'));
 });
 
 /**

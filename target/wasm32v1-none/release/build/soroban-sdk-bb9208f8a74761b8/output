@@ -1,0 +1,3 @@
+cargo::rustc-check-cfg=cfg(soroban_sdk_internal_no_rssdkver_meta)
+cargo:rustc-env=RUSTC_VERSION=1.98.0
+cargo:rustc-env=GIT_REVISION=ea54f95d3f2f49e0487b29fd1a9f469638f09aba

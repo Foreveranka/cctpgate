@@ -134,3 +134,29 @@ test('waiting continues well past the hard-finality window', () => {
   assert.equal(stillWorthWaiting(null, { elapsedSeconds: 25 * 60 }), true);
   assert.equal(stillWorthWaiting(null, { elapsedSeconds: 61 * 60 }), false, 'then a human looks');
 });
+
+/**
+ * Circle answered `complete` while the signature was still absent, and the
+ * claim went out with `null` where the attestation should have been. The RPC
+ * called it a parameter error, which is true and useless. Ready has to mean
+ * both halves are in hand.
+ */
+test('complete without a signature is not ready', async () => {
+  const answer = {
+    messages: [
+      {
+        status: 'complete',
+        message: '0xdeadbeef',
+        attestation: 'PENDING',
+        decodedMessage: {},
+      },
+    ],
+  };
+  const got = await fetchAttestation('http://iris', 27, 'hash', {
+    fetchImpl: async () => new Response(JSON.stringify(answer), { status: 200 }),
+  });
+
+  assert.equal(got.status, 'complete');
+  assert.equal(got.ready, false, 'a missing signature is not readiness');
+  assert.equal(got.attestation, null);
+});

@@ -49,9 +49,22 @@ export async function fetchAttestation(api, sourceDomain, txHash, { fetchImpl = 
   const decoded = message.decodedMessage ?? {};
   const executed = decoded.finalityThresholdExecuted;
 
+  // Both halves, without their `0x`, which is how the Stellar CLI and SDK
+  // want them. Computed before `ready` because `ready` depends on them.
+  const body_message = message.message ? message.message.slice(2) : null;
+  const signature =
+    message.attestation && message.attestation !== 'PENDING'
+      ? message.attestation.slice(2)
+      : null;
+
   return {
     status: message.status,
-    ready: message.status === 'complete',
+    /// "Complete" is Circle's word for the message, not a promise that both
+    /// halves are in this response. A status of complete with the signature
+    /// still missing has been seen, and taking it at its word sent a claim
+    /// built on `null` to an RPC, which answered with a parameter error and
+    /// no hint of the cause. Ready means both halves are actually here.
+    ready: message.status === 'complete' && Boolean(body_message) && Boolean(signature),
     /// Why it is taking longer than asked. `insufficient_fee` means the fast
     /// tier was refused and hard finality is being waited out instead.
     delayReason: message.delayReason ?? null,
@@ -60,12 +73,8 @@ export async function fetchAttestation(api, sourceDomain, txHash, { fetchImpl = 
     finalityRequested: decoded.minFinalityThreshold ? Number(decoded.minFinalityThreshold) : null,
     finalityExecuted: executed ? Number(executed) : null,
     fellBackToStandard: Boolean(executed && Number(executed) === 2000 && message.delayReason),
-    /// The two things `mint_and_forward` needs, without their `0x`, which is
-    /// how the Stellar CLI and SDK want them.
-    message: message.message ? message.message.slice(2) : null,
-    attestation: message.attestation && message.attestation !== 'PENDING'
-      ? message.attestation.slice(2)
-      : null,
+    message: body_message,
+    attestation: signature,
   };
 }
 
