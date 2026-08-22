@@ -34,6 +34,10 @@ import {
  * origin carries no such invitation: anyone who can change it already serves
  * the page.
  */
+/// Where the hosted watcher answers, once there is one. Null until then, and
+/// the page is honest about what that costs rather than pretending.
+const HOSTED_WATCHER = null;
+
 function watcherOrigin() {
   const { protocol, hostname } = window.location;
 
@@ -41,10 +45,11 @@ function watcherOrigin() {
   // https, so the watcher is on the same host, on its own port.
   if (protocol === 'http:') return `http://${hostname}:8787`;
 
-  // Served over https, so this is the deployment and the watcher is the
-  // hosted one. It answers on 8788 there, behind Caddy, because 8787 was
-  // already taken on that machine.
-  return 'https://stellargateapi.duckdns.org';
+  // Served over https, so this is the deployment. There is no hosted watcher
+  // yet: the interface, the address checks and the quote all work without one,
+  // and everything that moves money says so plainly rather than failing with
+  // a network error nobody can act on.
+  return HOSTED_WATCHER ?? '';
 }
 
 const CONFIG = {
@@ -111,6 +116,8 @@ const el = {
   sheetCancel: $('sheetCancel'),
   historyCard: $('historyCard'),
   historyList: $('historyList'),
+  claimCard: $('claimCard'),
+  claimList: $('claimList'),
   destLabel: $('destLabel'),
   qArrives: $('qArrives'),
   fromWho: $('fromWho'),
@@ -132,7 +139,7 @@ const el = {
 };
 
 const state = {
-  from: 'base',
+  from: 'avalanche',
   to: 'stellar',
   stellarWallet: null,
   evmName: null,
@@ -219,6 +226,10 @@ const STATUS = {
   trustline: ['is-ok', '✓', '<b>We will add the USDC trustline.</b><span class="sub">Your account covers its own half XLM reserve, so this costs you nothing beyond the bridge fee.</span>'],
   fund: ['is-warn', '+', '<b>This address cannot hold USDC yet.</b><span class="sub">We will send it 3 XLM so it can, and add the trustline. Charged once, and only to addresses that need it.</span>'],
   error: ['is-bad', '!', '<b>Could not reach Horizon.</b><span class="sub">The address may still be fine; we simply could not check it just now.</span>'],
+  // Pasting the address you are sending FROM is the commonest slip there is,
+  // and answering it with "the checksum does not match" is technically true
+  // and useless. Name what was pasted and what the field wants instead.
+  evm: ['is-bad', '!', '<b>That is an Avalanche address.</b><span class="sub">This field wants the Stellar address the money is going to, the one starting with G. An EVM address cannot receive on Stellar.</span>'],
 };
 
 /**
@@ -616,6 +627,10 @@ async function connectStellar() {
     renderSides();
 
     prefillDestination();
+    // Anything this address was left holding is listed the moment it connects,
+    // so a user who closed the tab mid-transfer finds it waiting rather than
+    // wondering where it went.
+    void renderClaims();
   } catch (error) {
     setStatus('idle');
     setError(error);
@@ -677,7 +692,8 @@ async function checkDestination() {
   }
   if (!strkeyKind(address)) {
     el.dest.classList.add('bad');
-    setStatus('invalid');
+    // `address` is upper-cased above, so an EVM address arrives as 0X…
+    setStatus(/^0X[0-9A-F]{40}$/.test(address) ? 'evm' : 'invalid');
     render();
     return;
   }
@@ -699,14 +715,18 @@ async function checkDestination() {
 }
 
 function render() {
+  // A button that does nothing should not look like one that does. Max is
+  // only meaningful once a balance has been read.
+  el.max.disabled = state.balance === null;
+
   const amount = parseUsdc(el.amount.value);
   const activate = state.inspection?.fundsUser === true;
   const floor = CONFIG.minAmount + (activate ? CONFIG.activationFee : 0n);
 
   if (amount === null || amount === 0n) {
-    el.qSend.textContent = ', ';
-    el.qFee.textContent = ', ';
-    el.qGet.textContent = ', ';
+    el.qSend.textContent = '—';
+    el.qFee.textContent = '—';
+    el.qGet.textContent = '—';
     el.qActRow.hidden = true;
   } else {
     const { fee, activation, net } = quote(amount, activate);
@@ -750,7 +770,7 @@ function render() {
               : outbound
                 ? `Bridge to ${CHAINS[state.to].name}`
                 : activate
-                  ? 'Sign the Stellar setup'
+                  ? 'Sign the account setup'
                   : 'Bridge to Stellar';
 
   // Only while nothing is in flight. `render` runs on every keystroke and on
@@ -790,19 +810,25 @@ function showProgress(completed) {
  */
 const STEPS = {
   in: [
-    ['Sign the Stellar setup', 'Costs nothing. Nothing has happened yet if you stop here.'],
-    ['Burn the USDC on Avalanche', 'This is the step that commits your money.'],
-    ['We set up your Stellar account', 'Done while Circle attests, so it costs you no extra wait.'],
     [
-      'USDC arrives',
-      "Under a minute. Stellar does take Circle's fast transfers, whatever the documentation reads like.",
+      'Sign the account setup',
+      'Only if your account is not ready yet. Costs nothing to sign, and nothing has happened if you stop here.',
+    ],
+    ['Burn the USDC on Avalanche', 'This is the step that commits your money.'],
+    [
+      'Your account is made ready',
+      'Created, given a USDC trustline and enough XLM to pay its own way. Done while Circle attests.',
+    ],
+    [
+      'You claim the USDC',
+      'The mint is yours to make and yours to time. Waiting is free: an unclaimed message is not consumed.',
     ],
   ],
   out: [
     ['Build the burn', 'We put it together. Nothing is signed and nothing has moved.'],
     ['Sign the burn in Freighter', 'This is the step that commits your money.'],
     ['The burn lands on Stellar', "Seconds. Stellar's own finality was never the slow part."],
-    ['We claim it on Avalanche', 'Anyone may call receiveMessage. Somebody has to, so it is us.'],
+    ['Claim it on Avalanche', 'A permissionless call, made from your own wallet, when you choose.'],
   ],
 };
 
@@ -849,6 +875,106 @@ function explorerFor(entry) {
  * and does not become untrue, so once it is recorded there is nothing left to
  * learn and no reason to keep asking.
  */
+// --------------------------------------------------------------------------
+// The claim: the last step, and the user's own.
+//
+// We prepare the account and stop. The mint is a permissionless call that
+// belongs to whoever the burn named, so it is offered here as a button rather
+// than made on anybody's behalf. Everything about it is designed to survive a
+// closed tab: the list is fetched from the watcher by address, not held in
+// this page, and an unclaimed message is not consumed, so nothing expires.
+// --------------------------------------------------------------------------
+
+/// Everything waiting on the connected Stellar address.
+async function renderClaims() {
+  if (!el.claimCard) return;
+  if (!state.stellar) {
+    el.claimCard.hidden = true;
+    return;
+  }
+
+  let waiting = [];
+  try {
+    const { status, body } = await api('/claimable');
+    if (status === 200) {
+      waiting = (body.transfers ?? []).filter((t) => t.recipient === state.stellar);
+    }
+  } catch {
+    // The watcher being unreachable is not the user's problem to read about
+    // here; the transfer is safe either way and the panel simply stays quiet.
+    el.claimCard.hidden = true;
+    return;
+  }
+
+  el.claimCard.hidden = waiting.length === 0;
+  el.claimList.innerHTML = '';
+
+  for (const item of waiting) {
+    const row = document.createElement('div');
+    row.className = 'claim';
+
+    const left = document.createElement('div');
+    const amt = document.createElement('div');
+    amt.className = 'amt';
+    amt.textContent = 'USDC waiting';
+    const to = document.createElement('div');
+    to.className = 'to';
+    to.textContent = `burn ${item.txHash.slice(0, 10)}…`;
+    left.append(amt, to);
+
+    const take = document.createElement('button');
+    take.className = 'take';
+    take.type = 'button';
+    take.textContent = 'Claim';
+    take.addEventListener('click', () => claim(item.txHash, take));
+
+    row.append(left, take);
+    el.claimList.append(row);
+  }
+}
+
+/// Builds the forwarder call, has the user sign it, submits it, and tells the
+/// watcher it landed. A failure here costs a fee and nothing else: the message
+/// is not consumed by a refused claim, so the button comes back.
+async function claim(txHash, button) {
+  const previous = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Claiming…';
+
+  try {
+    const built = await api('/claim', { txHash, source: state.stellar });
+    if (built.status !== 200) {
+      throw new Error(built.body?.error ?? built.body?.reason ?? 'the claim could not be built');
+    }
+
+    const signed = await signWithStellar(state.stellarWallet, built.body.xdr, {
+      networkPassphrase: CONFIG.stellar.passphrase,
+      address: state.stellar,
+    });
+
+    const sent = await fetch(`${CONFIG.stellar.soroban}/`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'sendTransaction',
+        params: { transaction: signed },
+      }),
+    });
+    const result = (await sent.json()).result ?? {};
+    if (result.status === 'ERROR') throw new Error('the claim was rejected');
+
+    await api('/claimed', { txHash, stellarTxHash: result.hash ?? null });
+    setStatus('done', 'Claimed. The USDC is in your account.');
+    await renderClaims();
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = previous;
+    setStatus('bad', String(error?.message ?? error));
+  }
+}
+
 async function renderHistory() {
   const entries = history.all();
   el.historyCard.hidden = entries.length === 0;
@@ -892,6 +1018,7 @@ async function renderHistory() {
       if (status === 200 && body.delivered) {
         history.settle(entry.txHash, body.deliveredAt ?? true);
         renderHistory();
+        void renderClaims();
         return;
       }
     } catch {
@@ -993,6 +1120,7 @@ el.swap.addEventListener('click', () => {
 });
 
 renderHistory();
+void renderClaims();
 renderSides();
 
 el.net.textContent = CONFIG.network;
@@ -1014,6 +1142,14 @@ render();
 // --------------------------------------------------------------------------
 
 async function api(path, body) {
+  if (!CONFIG.api) {
+    throw new Error(
+      'The hosted bridge service is not running yet. This page previews the ' +
+        'interface: addresses are checked and quotes are real, but nothing can ' +
+        'be moved from here until the service is up. Running it yourself works ' +
+        'today, see the repository.',
+    );
+  }
   let response;
   try {
     response = await fetch(`${CONFIG.api}${path}`, {
@@ -1125,6 +1261,7 @@ async function bridgeOut() {
       recipient,
     });
     renderHistory();
+    void renderClaims();
 
     setStatus('done', `Burned. The bridge will claim it on ${CHAINS[state.to].name}.`);
     // The claim is recorded in the same store the way in uses, under this same
@@ -1232,6 +1369,7 @@ async function bridge() {
       recipient,
     });
     renderHistory();
+    void renderClaims();
 
     setStatus('done', 'Burned. Watching for delivery…');
     watchDelivery(txHash);
@@ -1252,6 +1390,7 @@ async function watchDelivery(txHash) {
     if (status === 200 && body.delivered) {
       history.settle(txHash, body.deliveredAt);
       renderHistory();
+      void renderClaims();
       showProgress(4);
       state.transferring = false;
       // `stellarTxHash` is the store's name for it and it predates the way

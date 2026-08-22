@@ -49,8 +49,8 @@ export const CHAINS = {
 };
 
 export const ROUTES = {
-  'base>stellar': { live: true },
-  'stellar>base': { live: true },
+  'avalanche>stellar': { live: true },
+  'stellar>avalanche': { live: true },
 };
 
 export const routeKey = (from, to) => `${from}>${to}`;

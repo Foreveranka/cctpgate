@@ -3,29 +3,32 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Stellar Bridge :: USDC into an account that works</title>
+<title>CCTPGate :: native USDC out of Avalanche</title>
 <link rel="icon" href="favicon.svg">
 <style>
 :root{
-  /* Stellar yellow against a warm paper, rather than on white where it glares. */
-  --yellow:#FDDA24;
-  --yellow-deep:#E8C31A;
-  --yellow-wash:#FDF6D8;
-  --beige:#F3ECDD;
-  --beige-deep:#E8DFC9;
-  --paper:#FBF7EF;
-  --card:#FFFDF8;
-  --ink:#171512;
-  --ink-soft:#6A6153;
-  --ink-faint:#9A9184;
-  --line:#DED3BB;
-  --ok:#2E6B4F;
-  --ok-wash:#E4F0E8;
+  /* One accent, used only where something is live or about to cost money. */
+  --red:#E84142;
+  --red-deep:#C9302F;
+  --red-wash:#FDECEC;
+  --paper:#FFFFFF;
+  --card:#FFFFFF;
+  --wash:#F7F7F8;
+  --wash-deep:#EFEFF1;
+  --ink:#111113;
+  --ink-soft:#55565E;
+  --ink-faint:#8A8B94;
+  --line:#E2E2E6;
+  --line-firm:#C9C9D0;
+  --ok:#1F6F4A;
+  --ok-wash:#ECF5F0;
   --warn:#8A5A12;
-  --warn-wash:#FBEFD5;
+  --warn-wash:#FBF3E4;
   --bad:#9B2C22;
-  --bad-wash:#F8E5E1;
-  --radius:14px;
+  --bad-wash:#FBECEA;
+  /* Nothing here is rounded. A sharp edge reads as a made thing rather than
+     a soft one, and the whole product is about being exact. */
+  --radius:0;
   --mono:'SF Mono',ui-monospace,'JetBrains Mono',Menlo,Consolas,monospace;
 }
 *{box-sizing:border-box}
@@ -52,8 +55,8 @@ body{
 
 header{display:flex;align-items:center;gap:12px;margin-bottom:28px}
 .mark{
-  width:34px;height:34px;border-radius:9px;flex:none;
-  background:var(--yellow);
+  width:26px;height:26px;border-radius:0;flex:none;
+  background:transparent;
   display:grid;place-items:center;
 }
 .mark svg{display:block}
@@ -61,13 +64,13 @@ header{display:flex;align-items:center;gap:12px;margin-bottom:28px}
 .brand span{color:var(--ink-faint);font-weight:450}
 .net{
   margin-left:auto;font-size:12px;font-weight:600;letter-spacing:.02em;
-  padding:5px 10px;border-radius:999px;
-  background:var(--beige);color:var(--ink-soft);border:1px solid var(--line);
+  padding:5px 10px;border-radius:0;
+  background:var(--wash);color:var(--ink-soft);border:1px solid var(--line);
 }
 
 /* ---------- the bridge card ---------- */
 .card{
-  background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+  background:var(--card);border:1px solid var(--line);border-radius:0;
   box-shadow:0 1px 2px rgba(23,21,18,.04),0 8px 28px -18px rgba(23,21,18,.28);
   overflow:hidden;
 }
@@ -92,33 +95,33 @@ header{display:flex;align-items:center;gap:12px;margin-bottom:28px}
   background:repeating-linear-gradient(90deg,var(--line) 0 4px,transparent 4px 8px);
 }
 .span .dot{
-  position:relative;width:28px;height:28px;border-radius:50%;
-  background:var(--yellow);border:1px solid var(--yellow-deep);
+  position:relative;width:28px;height:28px;border-radius:0;
+  background:var(--red);border:1px solid var(--red-deep);
   display:grid;place-items:center;font-size:13px;color:var(--ink);
   padding:0;cursor:pointer;font-family:inherit;
   transition:background .12s,transform .12s;
 }
-.span .dot:hover{background:var(--yellow-deep)}
+.span .dot:hover{background:var(--red-deep)}
 .span .dot:active{transform:scale(.92)}
 
 /* Picking an end. Chains we cannot carry yet are listed and disabled rather
    than hidden: "not yet" is information, and an absent option only prompts
    the question again. */
 .pick{
-  width:100%;margin-top:7px;border:1px solid var(--line);border-radius:8px;
+  width:100%;margin-top:7px;border:1px solid var(--line);border-radius:0;
   background:var(--paper);color:var(--ink);padding:8px 9px;
   font:inherit;font-weight:600;font-size:14px;cursor:pointer;
 }
-.pick:focus{outline:none;border-color:var(--yellow-deep);background:var(--card)}
+.pick:focus{outline:none;border-color:var(--red-deep);background:var(--card)}
 .pick option:disabled{color:var(--ink-faint)}
 
 .connects{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line);border-top:1px solid var(--line)}
 .connects button{
-  border:0;background:var(--beige);color:var(--ink);
+  border:0;background:var(--wash);color:var(--ink);
   padding:13px 12px;font:inherit;font-weight:600;font-size:13.5px;cursor:pointer;
   transition:background .12s;
 }
-.connects button:hover:not(:disabled){background:var(--beige-deep)}
+.connects button:hover:not(:disabled){background:var(--wash-deep)}
 .connects button.on{color:var(--ok);background:var(--ok-wash)}
 /* Disconnecting is a small thing next to a large one: available without
    competing with the button that does the work. */
@@ -137,9 +140,9 @@ header{display:flex;align-items:center;gap:12px;margin-bottom:28px}
 .hrow .way{font-size:13.5px;font-weight:600;color:var(--ink);white-space:nowrap}
 .hrow .amt{font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
 .hrow .when{margin-left:auto;font-size:12px;color:var(--ink-faint);white-space:nowrap}
-.hrow .state{font-size:12px;font-weight:650;padding:2px 7px;border-radius:999px;white-space:nowrap}
+.hrow .state{font-size:12px;font-weight:650;padding:2px 7px;border-radius:0;white-space:nowrap}
 .hrow .state.ok{background:var(--ok-wash);color:var(--ok)}
-.hrow .state.waiting{background:var(--beige);color:var(--ink-soft)}
+.hrow .state.waiting{background:var(--wash);color:var(--ink-soft)}
 .hrow a{color:var(--ink-soft);font-size:12px}
 
 /* ---------- form ---------- */
@@ -163,43 +166,47 @@ label{display:block;font-size:12px;font-weight:650;letter-spacing:.05em;text-tra
 .amount input::placeholder{color:#D8CFBB}
 .unit{font-weight:640;font-size:15px;color:var(--ink-soft);flex:none}
 .max{
-  flex:none;border:1px solid var(--line);background:var(--beige);color:var(--ink-soft);
-  border-radius:7px;padding:5px 9px;font:inherit;font-size:12px;font-weight:650;cursor:pointer;
+  flex:none;border:1px solid var(--line);background:var(--wash);color:var(--ink-soft);
+  border-radius:0;padding:5px 9px;font:inherit;font-size:12px;font-weight:650;cursor:pointer;
 }
-.max:hover{background:var(--beige-deep)}
+.max:hover:not(:disabled){background:var(--wash-deep)}
+.max:disabled{opacity:.45;cursor:default}
 .balance{margin-top:6px;font-size:12.5px;color:var(--ink-faint)}
 
 input[type=text].addr{
-  width:100%;border:1px solid var(--line);border-radius:9px;background:var(--paper);
+  width:100%;border:1px solid var(--line);border-radius:0;background:var(--paper);
   font-family:var(--mono);font-size:13px;color:var(--ink);padding:11px 12px;
 }
-input[type=text].addr:focus{outline:none;border-color:var(--yellow-deep);background:var(--card)}
+input[type=text].addr:focus{outline:none;border-color:var(--red-deep);background:var(--card)}
 input[type=text].addr.bad{border-color:var(--bad);background:var(--bad-wash)}
 
 /* ---------- destination status ---------- */
 .status{
   margin-top:11px;display:flex;gap:10px;align-items:flex-start;
-  padding:11px 12px;border-radius:9px;font-size:13.5px;line-height:1.45;
+  padding:11px 12px;border-radius:0;font-size:13.5px;line-height:1.45;
 }
-.status .ic{flex:none;width:17px;height:17px;border-radius:50%;display:grid;place-items:center;font-size:11px;font-weight:700;margin-top:1px}
+.status .ic{flex:none;width:17px;height:17px;border-radius:0;display:grid;place-items:center;font-size:11px;font-weight:700;margin-top:1px}
 .status.is-ok{background:var(--ok-wash);color:var(--ok)}
 .status.is-ok .ic{background:var(--ok);color:#fff}
 .status.is-warn{background:var(--warn-wash);color:var(--warn)}
 .status.is-warn .ic{background:var(--warn);color:#fff}
 .status.is-bad{background:var(--bad-wash);color:var(--bad)}
 .status.is-bad .ic{background:var(--bad);color:#fff}
-.status.is-idle{background:var(--beige);color:var(--ink-soft)}
+.status.is-idle{background:var(--wash);color:var(--ink-soft)}
 .status.is-idle .ic{background:var(--ink-faint);color:#fff}
 .status b{font-weight:650}
 .status .sub{display:block;margin-top:3px;opacity:.85;font-size:12.5px}
 
 /* ---------- quote ---------- */
-.quote{background:var(--yellow-wash);border-top:1px solid var(--line);padding:16px 18px}
+.quote{background:var(--wash);border-top:1px solid var(--line);padding:16px 18px}
+/* `hidden` has to win over a display rule, or a row we mean to hide stays
+   on the screen saying 0.00 and reads as a fee nobody is charging. */
+[hidden]{display:none !important}
 .row{display:flex;justify-content:space-between;align-items:baseline;padding:5px 0;font-size:13.5px;color:var(--ink-soft)}
 .row .v{font-family:var(--mono);font-size:13px;color:var(--ink)}
 .row.muted .v{color:var(--ink-soft)}
 .row.total{
-  margin-top:8px;padding-top:12px;border-top:1px solid var(--beige-deep);
+  margin-top:8px;padding-top:12px;border-top:1px solid var(--wash-deep);
   font-size:15px;font-weight:650;color:var(--ink);
 }
 .row.total .v{font-size:19px;font-weight:650;letter-spacing:-.01em}
@@ -207,23 +214,23 @@ input[type=text].addr.bad{border-color:var(--bad);background:var(--bad-wash)}
 /* ---------- action ---------- */
 .go{
   display:block;width:100%;border:0;border-radius:0;
-  background:var(--yellow);color:var(--ink);
+  background:var(--red);color:var(--ink);
   padding:17px;font:inherit;font-weight:680;font-size:15.5px;letter-spacing:-.01em;
-  cursor:pointer;border-top:1px solid var(--yellow-deep);
+  cursor:pointer;border-top:1px solid var(--red-deep);
   transition:background .12s;
 }
-.go:hover:not(:disabled){background:var(--yellow-deep)}
-.go:disabled{background:var(--beige);color:var(--ink-faint);border-top-color:var(--line);cursor:not-allowed}
+.go:hover:not(:disabled){background:var(--red-deep)}
+.go:disabled{background:var(--wash);color:var(--ink-faint);border-top-color:var(--line);cursor:not-allowed}
 
 /* ---------- steps ---------- */
 .steps{padding:6px 18px 16px}
 .steps h3{font-size:12px;font-weight:650;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-faint);margin:12px 0 4px}
 .step{display:flex;gap:12px;padding:9px 0;align-items:flex-start}
 .step .n{
-  flex:none;width:21px;height:21px;border-radius:50%;background:var(--beige);border:1px solid var(--line);
+  flex:none;width:21px;height:21px;border-radius:0;background:var(--wash);border:1px solid var(--line);
   display:grid;place-items:center;font-size:11px;font-weight:700;color:var(--ink-faint);margin-top:1px;
 }
-.step.on .n{background:var(--yellow);border-color:var(--yellow-deep);color:var(--ink)}
+.step.on .n{background:var(--red);border-color:var(--red-deep);color:var(--ink)}
 .step.done .n{background:var(--ok);border-color:var(--ok);color:#fff}
 .step .t{font-size:13.5px;color:var(--ink-faint)}
 .step.on .t,.step.done .t{color:var(--ink)}
@@ -238,7 +245,7 @@ input[type=text].addr.bad{border-color:var(--bad);background:var(--bad-wash)}
 }
 .sheet[hidden]{display:none}
 .sheet .panel{
-  background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+  background:var(--card);border:1px solid var(--line);border-radius:0;
   width:min(360px,100%);overflow:hidden;
   box-shadow:0 20px 60px -20px rgba(23,21,18,.5);
 }
@@ -254,11 +261,11 @@ input[type=text].addr.bad{border-color:var(--bad);background:var(--bad-wash)}
   color:var(--ink);cursor:pointer;text-align:left;
 }
 .sheet .wallet:first-of-type{border-top:0}
-.sheet .wallet:hover{background:var(--beige)}
-.sheet .wallet img{width:22px;height:22px;border-radius:6px;flex:none}
+.sheet .wallet:hover{background:var(--wash)}
+.sheet .wallet img{width:22px;height:22px;border-radius:0;flex:none}
 .sheet .none{padding:16px 18px;font-size:13.5px;color:var(--ink-soft);line-height:1.5}
 .sheet .cancel{
-  width:100%;border:0;border-top:1px solid var(--line);background:var(--beige);
+  width:100%;border:0;border-top:1px solid var(--line);background:var(--wash);
   padding:12px;font:inherit;font-weight:600;font-size:13.5px;color:var(--ink-soft);cursor:pointer;
 }
 
@@ -281,6 +288,21 @@ footer a{color:var(--ink-soft)}
   .end + .span + .end{border-left:0;border-top:1px solid var(--line)}
   .amount input{font-size:26px}
 }
+
+/* ---- claims: the part the user owns ---- */
+.claims{padding:16px 18px}
+.claims h3{font-size:12px;font-weight:650;letter-spacing:.05em;text-transform:uppercase;
+  color:var(--ink-faint);margin:0 0 10px}
+.claim{display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line)}
+.claim:first-of-type{border-top:0}
+.claim .amt{font-family:var(--mono);font-size:13px;color:var(--ink)}
+.claim .to{font-family:var(--mono);font-size:11.5px;color:var(--ink-faint);margin-top:2px}
+.claim .take{margin-left:auto;flex:none;border:1px solid var(--red);background:var(--red);
+  color:#fff;font:inherit;font-size:12.5px;font-weight:650;letter-spacing:.02em;
+  padding:9px 15px;cursor:pointer;border-radius:0}
+.claim .take:hover:not(:disabled){background:var(--red-deep);border-color:var(--red-deep)}
+.claim .take:disabled{background:var(--wash);border-color:var(--line);color:var(--ink-faint);cursor:default}
+.claim-note{font-size:12px;color:var(--ink-faint);line-height:1.5;margin:12px 0 0}
 </style>
 </head>
 <body>
@@ -288,13 +310,12 @@ footer a{color:var(--ink-soft)}
 
   <header>
     <div class="mark" aria-hidden="true">
-      <svg width="19" height="19" viewBox="0 0 19 19" fill="none">
-        <path d="M2 13.5h15M2 5.5h15" stroke="#171512" stroke-width="1.6" stroke-linecap="round"/>
-        <circle cx="9.5" cy="9.5" r="2.6" fill="#171512"/>
+      <svg width="24" height="24" viewBox="0 0 19 19" fill="none">
+        <path d="M9.5 1.5 L17.5 17.5 H1.5 Z" fill="#E84142"/>
       </svg>
     </div>
     <div>
-      <div class="brand">Stellar Bridge <span>/ USDC</span></div>
+      <div class="brand">CCTPGate <span>/ native USDC</span></div>
     </div>
     <div class="net" id="net">testnet</div>
   </header>
@@ -333,7 +354,7 @@ footer a{color:var(--ink-soft)}
         <span class="unit">USDC</span>
         <button class="max" id="max" type="button">Max</button>
       </div>
-      <div class="balance" id="balance">Connect a wallet on Base to see your balance.</div>
+      <div class="balance" id="balance">Connect a wallet on Avalanche to see your balance.</div>
     </div>
 
     <div class="field">
@@ -350,7 +371,7 @@ footer a{color:var(--ink-soft)}
     <div class="quote" id="quote">
       <div class="row"><span>You send</span><span class="v" id="qSend">&mdash;</span></div>
       <div class="row muted"><span>Bridge fee</span><span class="v" id="qFee">&mdash;</span></div>
-      <div class="row muted" id="qActRow" hidden><span>Account activation</span><span class="v" id="qAct">&mdash;</span></div>
+      <div class="row muted" id="qActRow" hidden><span>Account sponsorship</span><span class="v" id="qAct">&mdash;</span></div>
       <div class="row total"><span id="qArrives">Arrives on Stellar</span><span class="v" id="qGet">&mdash;</span></div>
     </div>
 
@@ -364,25 +385,37 @@ footer a{color:var(--ink-soft)}
       <h3>How this goes</h3>
       <div class="step" id="s1">
         <span class="n">1</span>
-        <span class="t">Sign the Stellar setup
-          <small>Costs nothing. Nothing has happened yet if you stop here.</small></span>
+        <span class="t">Sign the account setup
+          <small>Only if your Stellar account is not ready yet. Costs nothing
+          to sign, and nothing has happened if you stop here.</small></span>
       </div>
       <div class="step" id="s2">
         <span class="n">2</span>
-        <span class="t">Burn the USDC on Base
+        <span class="t">Burn the USDC on Avalanche
           <small>This is the step that commits your money.</small></span>
       </div>
       <div class="step" id="s3">
         <span class="n">3</span>
-        <span class="t">We set up your Stellar account
-          <small>Done while Circle attests, so it costs you no extra wait.</small></span>
+        <span class="t">Your account is made ready
+          <small>Created, given a USDC trustline and enough XLM to pay its own
+          way. Done while Circle attests, so it costs you no extra wait.</small></span>
       </div>
       <div class="step" id="s4">
         <span class="n">4</span>
-        <span class="t">USDC arrives
-          <small>Under a minute. Stellar does take Circle's fast transfers,
-          whatever the documentation reads like.</small></span>
+        <span class="t">You claim the USDC
+          <small>The mint is yours to make and yours to time. Waiting is free:
+          an unclaimed message is not consumed, so it is still there tomorrow.</small></span>
       </div>
+    </div>
+  </div>
+
+  <div class="card" id="claimCard" hidden>
+    <div class="claims">
+      <h3>Ready to claim</h3>
+      <div id="claimList"></div>
+      <p class="claim-note">Claiming submits Circle's forwarder call from your own
+        account and costs a fraction of an XLM. Nobody can claim it away from you:
+        the money mints to the address the burn named.</p>
     </div>
   </div>
 
@@ -395,11 +428,13 @@ footer a{color:var(--ink-soft)}
 
   <footer>
     <div class="hairline"></div>
-    <p><b>Your keys stay yours.</b> You make your own wallet in Freighter and hold
-       its key. We never generate or hold one. What we pay for, when it is
-       needed, is the account existing on the ledger.</p>
-    <p>The signature comes before the burn on purpose: there is no point at which
-       your money is taken and cannot be delivered.</p>
+    <p><b>Your keys stay yours.</b> You make your own wallet and hold its key.
+       We never generate or hold one. What the fee pays for, when it is needed,
+       is the account existing on the ledger with a trustline on it.</p>
+    <p><b>We never move your money.</b> The mint is a permissionless call and it
+       is yours to make. We prepare the account, and the USDC waits for you.</p>
+    <p>The setup signature comes before the burn on purpose: there is no point at
+       which your money is taken and cannot be delivered.</p>
     <p>This charges for the interface and for the setup on the far side, not for
        access to the rail. You can always call
        <a href="https://developers.circle.com/cctp" rel="noreferrer">CCTP</a>

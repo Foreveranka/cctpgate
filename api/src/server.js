@@ -153,6 +153,25 @@ export function createHandler({
     }
 
     /**
+     * The claim landed. Recorded here rather than watched for, because the
+     * transaction was the recipient's and this is the only party that saw it.
+     * Idempotent: a second report of the same claim changes nothing.
+     */
+    if (method === 'POST' && path === '/claimed') {
+      const { txHash, stellarTxHash = null } = body ?? {};
+      if (!txHash) return json(400, { error: 'txHash is required' });
+
+      const transfer = store.get(txHash);
+      if (!transfer) return json(404, { error: 'no record of that burn' });
+      if (transfer.deliveredAt) {
+        return json(200, { status: 'already recorded', at: transfer.deliveredAt.at });
+      }
+
+      store.markDelivered(txHash, stellarTxHash);
+      return json(200, { status: 'recorded' });
+    }
+
+    /**
      * What is waiting to be claimed. The interface polls this to know which
      * transfers still have a button on them.
      */
