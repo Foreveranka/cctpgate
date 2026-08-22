@@ -44,7 +44,7 @@ import {
 /// not infrastructure. When that changes, this line and the CSP change with it.
 /// Null here makes the page say the service is down rather than fail with a
 /// network error nobody can act on.
-const HOSTED_WATCHER = 'https://cars-mortality-marcus-alpine.trycloudflare.com';
+const HOSTED_WATCHER = 'https://springer-watson-norman-nova.trycloudflare.com';
 
 function watcherOrigin() {
   const { protocol, hostname } = window.location;
